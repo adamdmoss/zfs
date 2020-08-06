@@ -163,22 +163,12 @@ static void spl_cache_shrink(spl_kmem_cache_t *skc, void *obj);
 static void *
 kv_alloc(spl_kmem_cache_t *skc, int size, int flags)
 {
-	gfp_t lflags = kmem_flags_convert(flags);
-	void *ptr;
-
-	ptr = spl_vmalloc(size, lflags | __GFP_HIGHMEM);
-
-	/* Resulting allocated memory will be page aligned */
-	ASSERT(IS_P2ALIGNED(ptr, PAGE_SIZE));
-
-	return (ptr);
+	return (spl_kvmalloc(size, kmem_flags_convert(flags)));
 }
 
 static void
 kv_free(spl_kmem_cache_t *skc, void *ptr, int size)
 {
-	ASSERT(IS_P2ALIGNED(ptr, PAGE_SIZE));
-
 	/*
 	 * The Linux direct reclaim path uses this out of band value to
 	 * determine if forward progress is being made.  Normally this is
@@ -189,7 +179,7 @@ kv_free(spl_kmem_cache_t *skc, void *ptr, int size)
 	if (current->reclaim_state)
 		current->reclaim_state->reclaimed_slab += size >> PAGE_SHIFT;
 
-	vfree(ptr);
+	spl_kmem_free_impl(ptr, size);
 }
 
 /*
@@ -787,6 +777,14 @@ spl_kmem_cache_create(char *name, size_t size, size_t align,
 	 * Given the type of slab allocate the required resources.
 	 */
 	if (skc->skc_flags & KMC_KVMEM) {
+		/*
+		 * The SPL's slab allocator doesn't support specific alignments,
+		 * because there isn't a way to request a specific alignment
+		 * from kvmalloc().  In practice it returns non-page-aligned
+		 * addresses when using KASAN (kernel address sanitizer).
+		 */
+		ASSERT3U(skc->skc_obj_align, ==, SPL_KMEM_CACHE_ALIGN);
+
 		rc = spl_slab_size(skc,
 		    &skc->skc_slab_objs, &skc->skc_slab_size);
 		if (rc)
