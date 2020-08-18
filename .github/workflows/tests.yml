@@ -13,10 +13,16 @@ jobs:
         ref: ${{ github.event.pull_request.head.sha }}
     - name: Install dependencies
       run: |
-        sudo apt-get install --yes -qq build-essential autoconf libtool gawk alien fakeroot linux-headers-$(uname -r)
-        sudo apt-get install --yes -qq zlib1g-dev uuid-dev libattr1-dev libblkid-dev libselinux-dev libudev-dev libssl-dev python-dev python-setuptools python-cffi python3 python3-dev python3-setuptools python3-cffi
-        # packages for tests
-        sudo apt-get install --yes -qq parted lsscsi ksh attr acl nfs-kernel-server fio
+        sudo apt-get install --yes -qq build-essential autoconf libtool gdb lcov
+        sudo apt-get install --yes -qq git alien fakeroot wget curl bc fio acl \
+          sysstat mdadm lsscsi parted gdebi attr dbench watchdog ksh \
+          nfs-kernel-server samba rng-tools xz-utils dkms
+          linux-headers-$(uname -r) \
+        sudo apt-get install --yes -qq zlib1g-dev uuid-dev libblkid-dev libselinux-dev \
+          xfslibs-dev libattr1-dev libacl1-dev libudev-dev libdevmapper-dev \
+          libssl-dev libffi-dev libaio-dev libelf-dev libmount-dev \
+          libpam0g-dev pamtester python-dev python-setuptools python-cffi \
+          python3 python3-dev python3-setuptools python3-cffi
     - name: Prepare
       run: |
         sh autogen.sh
@@ -26,7 +32,8 @@ jobs:
     - name: Tests
       run: |
         /usr/share/zfs/zfs-tests.sh -v
-    - name: Echo results
-      if: ${{ failure() }}
-      run: |
-        find /var/tmp/test_results/current/log -type f -name '*' -printf "%f\n" -exec cat {} \;
+    - uses: actions/upload-artifact@v2
+      if: always()
+      with:
+        name: Test logs
+        path: /var/tmp/test_results/current/log/
