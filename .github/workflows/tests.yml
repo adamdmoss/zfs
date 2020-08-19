@@ -32,9 +32,17 @@ jobs:
         sudo dpkg -i *.deb
     - name: Tests
       run: |
-        /usr/share/zfs/zfs-tests.sh -v
+        /usr/share/zfs/zfs-tests.sh -v -T fallocate
+        ls -lah /var/tmp/test_results/
+        ls -lah /var/tmp/test_results/current/
+        ls -lah /var/tmp/test_results/current/log/
+    - name: Echo results
+      if: ${{ always() }}
+      run: |
+        find /var/tmp/test_results/current/log -type f -name '*' -printf "%f\n" -exec cat {} \;
     - uses: actions/upload-artifact@v2
       if: always()
       with:
         name: Test logs
         path: /var/tmp/test_results/current/log/
+        if-no-files-found: ignore
