@@ -33,9 +33,6 @@ jobs:
     - name: Tests
       run: |
         /usr/share/zfs/zfs-tests.sh -v -T fallocate
-        ls -lah /var/tmp/test_results/
-        ls -lah /var/tmp/test_results/current/
-        ls -lah /var/tmp/test_results/current/log/
     - name: Echo results
       if: ${{ always() }}
       run: |
@@ -44,5 +41,5 @@ jobs:
       if: always()
       with:
         name: Test logs
-        path: /var/tmp/test_results/current/log/
+        path: /var/tmp/test_results/current/
         if-no-files-found: ignore
