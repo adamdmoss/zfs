@@ -86,7 +86,7 @@ log_must fio $FIO_SCRIPTS/random_reads.fio
 
 #log_must zpool export $TESTPOOL
 #log_must zpool import -d $VDIR $TESTPOOL
-log_must test $(get_arcstat l2_misses) -neq 0
+log_must test $(get_arcstat l2_misses) -ne 0
 
 log_must zpool destroy -f $TESTPOOL
 
