@@ -213,7 +213,7 @@ kv_alloc(const spl_kmem_cache_t *skc, int size, int flags)
 static void
 kv_free(const spl_kmem_cache_t *skc, void *ptr, int size)
 {
-	ASSERT(IS_P2ALIGNED(ptr, skc->skc_obj_size));
+	ASSERT(IS_P2ALIGNED(ptr, skc->skc_obj_align));
 
 	/*
 	 * The Linux direct reclaim path uses this out of band value to
