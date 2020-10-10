@@ -186,9 +186,10 @@ kv_alloc(const spl_kmem_cache_t *skc, int size, int flags)
 	const gfp_t lflags = kmem_flags_convert(flags);
 	void *ptr = NULL;
 
-	const char *unaligned_ptr = 1+spl_kvmalloc(size +
+	const char *unaligned_ptr = spl_kvmalloc(size +
 	    kv_alloc_num_pad_bytes(skc), lflags);
 	if (likely(unaligned_ptr != NULL)) {
+		unaligned_ptr += 1;
 		/* round up from original pointer to satisfy alignment */
 		ptr = (void *)P2ROUNDUP_TYPED(unaligned_ptr,
 		    alignp2, uintptr_t);
