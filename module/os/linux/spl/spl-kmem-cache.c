@@ -174,7 +174,7 @@ const uint32_t kvmagic_poison = 0xDEADDEADU;
 static uint32_t
 kv_alloc_num_pad_bytes(const spl_kmem_cache_t *skc)
 {
-	return 1+(sizeof (kvalloc_endmarker_t) + (skc->skc_obj_align - 1));
+	return (sizeof (kvalloc_endmarker_t) + (skc->skc_obj_align - 1));
 }
 
 static void *
@@ -186,7 +186,7 @@ kv_alloc(const spl_kmem_cache_t *skc, int size, int flags)
 	const gfp_t lflags = kmem_flags_convert(flags);
 	void *ptr = NULL;
 
-	const char *unaligned_ptr = 1+spl_kvmalloc(size +
+	const char *unaligned_ptr = spl_kvmalloc(size +
 	    kv_alloc_num_pad_bytes(skc), lflags);
 	if (likely(unaligned_ptr != NULL)) {
 		/* round up from original pointer to satisfy alignment */
@@ -230,7 +230,7 @@ kv_free(const spl_kmem_cache_t *skc, void *ptr, int size)
 		mkr->magic = kvmagic_poison;
 		/* Reconstruct original pointer from before alignment */
 		char *unaligned_ptr = (char *)ptr - mkr->ptr_offset_bytes;
-		spl_kmem_free_impl(unaligned_ptr -1, size +
+		spl_kmem_free_impl(unaligned_ptr, size +
 		    kv_alloc_num_pad_bytes(skc));
 	} else {
 		if (mkr->magic == kvmagic_poison) {
