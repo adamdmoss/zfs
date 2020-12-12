@@ -221,7 +221,7 @@ SRCS+=	abd.c \
 	fm.c \
 	gzip.c \
 	lzjb.c \
-	lz4.c \
+	lz4legacy.c \
 	metaslab.c \
 	mmp.c \
 	multilist.c \
@@ -345,7 +345,7 @@ CFLAGS.dsl_dir.c= -Wno-cast-qual
 CFLAGS.dsl_deadlist.c= -Wno-cast-qual
 CFLAGS.dsl_prop.c= -Wno-cast-qual
 CFLAGS.fm.c= -Wno-cast-qual
-CFLAGS.lz4.c= -Wno-cast-qual
+CFLAGS.lz4legacy.c= -Wno-cast-qual
 CFLAGS.spa.c= -Wno-cast-qual
 CFLAGS.spa_misc.c= -Wno-cast-qual
 CFLAGS.sysctl_os.c= -include ../zfs_config.h
