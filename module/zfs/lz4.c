@@ -48,7 +48,7 @@ static kmem_cache_t *lz4_cache;
 
 /*ARGSUSED*/
 size_t
-lz4_compress_zfs(void *s_start, void *d_start, size_t s_len,
+lz4legacy_compress_zfs(void *s_start, void *d_start, size_t s_len,
     size_t d_len, int n)
 {
 	uint32_t bufsiz;
@@ -76,9 +76,13 @@ lz4_compress_zfs(void *s_start, void *d_start, size_t s_len,
 
 /*ARGSUSED*/
 int
-lz4_decompress_zfs(void *s_start, void *d_start, size_t s_len,
+lz4legacy_decompress_zfs(void *s_start, void *d_start, size_t s_len,
     size_t d_len, int n)
 {
+	/* missing buffer size uint32 encoded at start */
+	//if (s_len < 4)
+	//	return (1);
+
 	const char *src = s_start;
 	uint32_t bufsiz = BE_IN32(src);
 
