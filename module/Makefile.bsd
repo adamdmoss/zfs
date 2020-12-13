@@ -221,6 +221,8 @@ SRCS+=	abd.c \
 	fm.c \
 	gzip.c \
 	lzjb.c \
+	lz4.c \
+	lz4hc.c \
 	lz4legacy.c \
 	metaslab.c \
 	mmp.c \

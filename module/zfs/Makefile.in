@@ -56,6 +56,8 @@ $(MODULE)-objs += fm.o
 $(MODULE)-objs += gzip.o
 $(MODULE)-objs += hkdf.o
 $(MODULE)-objs += lz4.o
+$(MODULE)-objs += lz4hc.o
+$(MODULE)-objs += lz4legacy.o
 $(MODULE)-objs += lzjb.o
 $(MODULE)-objs += metaslab.o
 $(MODULE)-objs += mmp.o
@@ -153,5 +155,9 @@ $(MODULE)-$(CONFIG_PPC64) += vdev_raidz_math_powerpc_altivec.o
 ifeq ($(CONFIG_ALTIVEC),y)
 $(obj)/vdev_raidz_math_powerpc_altivec.o: c_flags += -maltivec
 endif
+
+# pristine lz4 code needs some configuration via defines
+$(obj)/lz4.o: c_flags += -DLZ4_HEAPMODE=1
+$(obj)/lz4hc.o: c_flags += -UMAX -UMIN
 
 include $(mfdir)/../os/linux/zfs/Makefile

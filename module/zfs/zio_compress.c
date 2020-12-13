@@ -205,9 +205,10 @@ zio_decompress_data(enum zio_compress c, abd_t *src, void *dst,
 	{
 		/*
 		 * legacy decompression which requires scattered abd
-		 * data to be copied into a contiguous hunk first; this
+		 * data to be copied into a contiguous hunk first; the copy
 		 * overhead may be nontrivial given how fast a modern
-		 * decompressor can be (i.e. lz4 or zstd).
+		 * decompressor can be (i.e. lz4 or zstd) and this is
+		 * on the ARC-read path.
 		 */
 		void *tmp = abd_borrow_buf_copy(src, s_len);
 		ret = zio_decompress_data_buf(c, tmp, dst, s_len, d_len, level);

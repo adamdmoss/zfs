@@ -95,6 +95,8 @@ KERNEL_C = \
 	fm.c \
 	gzip.c \
 	lzjb.c \
+	lz4.c \
+	lz4hc.c \
 	lz4legacy.c \
 	metaslab.c \
 	mmp.c \
@@ -231,6 +233,13 @@ libzpool_la_LIBADD += -lgeom
 endif
 
 libzpool_la_LDFLAGS += -version-info 4:0:0
+
+LZ4CFLAGS = -DLZ4_HEAPMODE=1 -DLZ4_USER_MEMORY_FUNCTIONS
+lz4.$(OBJEXT): CFLAGS += ${LZ4CFLAGS}
+lz4.l$(OBJEXT): CFLAGS += ${LZ4CFLAGS}
+lz4hc.$(OBJEXT): CFLAGS += ${LZ4CFLAGS}
+lz4hc.l$(OBJEXT): CFLAGS += ${LZ4CFLAGS}
+
 
 if TARGET_CPU_POWERPC
 vdev_raidz_math_powerpc_altivec.$(OBJEXT): CFLAGS += -maltivec
