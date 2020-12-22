@@ -1820,7 +1820,8 @@ arc_hdr_authenticate(arc_buf_hdr_t *hdr, spa_t *spa, uint64_t dsobj)
 		abd = abd_get_from_buf(tmpbuf, lsize);
 		abd_take_ownership_of_buf(abd, B_TRUE);
 		csize = zio_compress_data(HDR_GET_COMPRESS(hdr),
-		    hdr->b_l1hdr.b_pabd, tmpbuf, lsize, hdr->b_complevel);
+		    hdr->b_l1hdr.b_pabd, tmpbuf, lsize, hdr->b_complevel,
+		    255/*compat*/);
 		ASSERT3U(csize, <=, psize);
 		abd_zero_off(abd, csize, psize - csize);
 	}
@@ -10423,7 +10424,7 @@ l2arc_log_blk_commit(l2arc_dev_t *dev, zio_t *pio, l2arc_write_callback_t *cb)
 
 	/* try to compress the buffer */
 	psize = zio_compress_data(ZIO_COMPRESS_LZ4,
-	    abd_buf->abd, tmpbuf, sizeof (*lb), 0);
+	    abd_buf->abd, tmpbuf, sizeof (*lb), 0, 13);
 
 	/* a log block is never entirely zero */
 	ASSERT(psize != 0);

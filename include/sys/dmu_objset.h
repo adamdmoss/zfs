@@ -128,6 +128,7 @@ struct objset {
 	zfs_sync_type_t os_sync;
 	zfs_redundant_metadata_type_t os_redundant_metadata;
 	uint64_t os_recordsize;
+	uint8_t os_mincompression_pct;
 	/*
 	 * The next four values are used as a cache of whatever's on disk, and
 	 * are initialized the first time these properties are queried. Before

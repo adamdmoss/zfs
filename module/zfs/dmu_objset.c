@@ -352,6 +352,14 @@ recordsize_changed_cb(void *arg, uint64_t newval)
 	os->os_recordsize = newval;
 }
 
+static void
+mincompression_changed_cb(void *arg, uint64_t newval)
+{
+	objset_t *os = arg;
+
+	os->os_mincompression_pct = newval;
+}
+
 void
 dmu_objset_byteswap(void *buf, size_t size)
 {
@@ -574,6 +582,11 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 				    ZFS_PROP_SPECIAL_SMALL_BLOCKS),
 				    smallblk_changed_cb, os);
 			}
+			if (err == 0) {
+				err = dsl_prop_register(ds,
+				    zfs_prop_to_name(ZFS_PROP_MINCOMPRESSION_PCT),
+				    mincompression_changed_cb, os);
+			}
 		}
 		if (err != 0) {
 			arc_buf_destroy(os->os_phys_buf, &os->os_phys_buf);
@@ -594,6 +607,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 		os->os_primary_cache = ZFS_CACHE_ALL;
 		os->os_secondary_cache = ZFS_CACHE_ALL;
 		os->os_dnodesize = DNODE_MIN_SIZE;
+		os->os_mincompression_pct = 13;
 	}
 
 	if (ds == NULL || !ds->ds_is_snapshot)

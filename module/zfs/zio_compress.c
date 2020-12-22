@@ -124,7 +124,7 @@ zio_compress_zeroed_cb(void *data, size_t len, void *private)
 
 size_t
 zio_compress_data(enum zio_compress c, abd_t *src, void *dst, size_t s_len,
-    uint8_t level)
+    uint8_t level, uint8_t min_compression_pct)
 {
 	size_t c_len, d_len;
 	uint8_t complevel;
