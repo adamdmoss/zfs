@@ -148,6 +148,7 @@ spl_kvmalloc(size_t size, gfp_t lflags)
 		return (kvmalloc(size, lflags));
 #endif
 
+	lflags |= GFP_USER | __GFP_COMP;
 	gfp_t kmalloc_lflags = lflags;
 
 	if (size > PAGE_SIZE) {
@@ -191,7 +192,7 @@ spl_kvmalloc(size_t size, gfp_t lflags)
 		return (ptr);
 	}
 
-	return (spl_vmalloc(size, lflags | __GFP_HIGHMEM));
+	return (spl_vmalloc(size, lflags));
 }
 
 /*
