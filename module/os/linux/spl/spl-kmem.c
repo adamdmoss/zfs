@@ -192,7 +192,7 @@ spl_kvmalloc(size_t size, gfp_t lflags)
 		return (ptr);
 	}
 
-	return (spl_vmalloc(size, lflags));
+	return (spl_vmalloc(size, lflags | __GFP_HIGHMEM));
 }
 
 /*
