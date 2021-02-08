@@ -443,12 +443,12 @@ int zfs_compressed_arc_enabled = B_TRUE;
  * ARC will evict meta buffers that exceed arc_meta_limit. This
  * tunable make arc_meta_limit adjustable for different workloads.
  */
-unsigned long zfs_arc_meta_limit_percent = 75;
+unsigned long zfs_arc_meta_limit_percent = 100;
 
 /*
  * Percentage that can be consumed by dnodes of ARC meta buffers.
  */
-unsigned long zfs_arc_dnode_limit_percent = 10;
+unsigned long zfs_arc_dnode_limit_percent = 75;
 
 /*
  * These tunables are Linux specific
