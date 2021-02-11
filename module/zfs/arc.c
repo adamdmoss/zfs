@@ -446,7 +446,7 @@ unsigned long zfs_arc_meta_limit_percent = 100;
 /*
  * Percentage that can be consumed by dnodes of ARC meta buffers.
  */
-unsigned long zfs_arc_dnode_limit_percent = 75;
+unsigned long zfs_arc_dnode_limit_percent = 100;
 
 /*
  * These tunables are Linux specific
@@ -4224,7 +4224,7 @@ arc_evict_state(arc_state_t *state, uint64_t spa, int64_t bytes,
 		 * Request that 10% of the LRUs be scanned by the superblock
 		 * shrinker.
 		 */
-		if (type == ARC_BUFC_DATA && aggsum_compare(&astat_dnode_size,
+		if (aggsum_compare(&astat_dnode_size,
 		    arc_dnode_size_limit) > 0) {
 			arc_prune_async((aggsum_upper_bound(&astat_dnode_size) -
 			    arc_dnode_size_limit) / sizeof (dnode_t) /
@@ -4370,10 +4370,33 @@ arc_evict_impl(arc_state_t *state, uint64_t spa, int64_t bytes,
 static uint64_t
 arc_evict_meta_balanced(uint64_t meta_used)
 {
-	int64_t delta, prune = 0, adjustmnt;
+	int64_t prune = 0, adjustment;
 	uint64_t total_evicted = 0;
-	arc_buf_contents_t type = ARC_BUFC_DATA;
-	int restarts = MAX(zfs_arc_meta_adjust_restarts, 0);
+	arc_buf_contents_t type = ARC_BUFC_METADATA;
+	/*
+	 * >= 2 restarts ensures we at least try evicting metadata
+	 * first, then restart with data if that wasn't enough (to
+	 * unhold more metadata), then restart to try at newly-unheld
+	 * metadata.
+	 */
+	int restarts = MAX(zfs_arc_meta_adjust_restarts, 2);
+
+	uint64_t meta_target = arc_meta_limit;
+
+	// at least limit the amount of metadata to the whole arc target size!
+	meta_target = MIN(meta_target, arc_c);
+
+	// todo: figure out some sort of dynamic target
+	//meta_target = 
+
+	/*
+	 * Although the goal is to evict metadata, we MAY also end up
+	 * evicting data in the process; we count that as progress
+	 * towards our target anyway in the interests of a balanced
+	 * arc, so we don't end up kicking out a lot of data just
+	 * to free up a little bit of metadata.
+	 */
+	adjustment = meta_used - meta_target;
 
 restart:
 	/*
@@ -4384,18 +4407,19 @@ restart:
 	 * metadata from the MFU. I think we probably need to implement a
 	 * "metadata arc_p" value to do this properly.
 	 */
-	adjustmnt = meta_used - arc_meta_limit;
+	//adjustmnt = meta_used - arc_meta_limit;
 
-	if (adjustmnt > 0 &&
+	if (adjustment > 0 &&
 	    zfs_refcount_count(&arc_mru->arcs_esize[type]) > 0) {
-		delta = MIN(zfs_refcount_count(&arc_mru->arcs_esize[type]),
-		    adjustmnt);
-		total_evicted += arc_evict_impl(arc_mru, 0, delta, type);
-		adjustmnt -= delta;
+		int64_t delta = MIN(zfs_refcount_count(&arc_mru->arcs_esize[type]),
+		    adjustment);
+		uint64_t evicted = arc_evict_impl(arc_mru, 0, delta, type);
+		total_evicted += evicted;
+		adjustment -= evicted;
 	}
 
 	/*
-	 * We can't afford to recalculate adjustmnt here. If we do,
+	 * We can't afford to recalculate adjustment here. If we do,
 	 * new metadata buffers can sneak into the MRU or ANON lists,
 	 * thus penalize the MFU metadata. Although the fudge factor is
 	 * small, it has been empirically shown to be significant for
@@ -4404,28 +4428,33 @@ restart:
 	 * simply decrement the amount of data evicted from the MRU.
 	 */
 
-	if (adjustmnt > 0 &&
+	if (adjustment > 0 &&
 	    zfs_refcount_count(&arc_mfu->arcs_esize[type]) > 0) {
-		delta = MIN(zfs_refcount_count(&arc_mfu->arcs_esize[type]),
-		    adjustmnt);
-		total_evicted += arc_evict_impl(arc_mfu, 0, delta, type);
+		int64_t delta = MIN(zfs_refcount_count(&arc_mfu->arcs_esize[type]),
+		    adjustment);
+		uint64_t evicted = arc_evict_impl(arc_mfu, 0, delta, type);
+		total_evicted += evicted;
+		adjustment -= evicted;
 	}
 
-	adjustmnt = meta_used - arc_meta_limit;
+	//adjustmnt = meta_used - arc_meta_limit;
 
-	if (adjustmnt > 0 &&
+	if (adjustment > 0 &&
 	    zfs_refcount_count(&arc_mru_ghost->arcs_esize[type]) > 0) {
-		delta = MIN(adjustmnt,
+		int64_t delta = MIN(adjustment,
 		    zfs_refcount_count(&arc_mru_ghost->arcs_esize[type]));
-		total_evicted += arc_evict_impl(arc_mru_ghost, 0, delta, type);
-		adjustmnt -= delta;
+		uint64_t evicted = arc_evict_impl(arc_mru_ghost, 0, delta, type);
+		total_evicted += evicted;
+		adjustment -= evicted;
 	}
 
-	if (adjustmnt > 0 &&
+	if (adjustment > 0 &&
 	    zfs_refcount_count(&arc_mfu_ghost->arcs_esize[type]) > 0) {
-		delta = MIN(adjustmnt,
+		int64_t delta = MIN(adjustment,
 		    zfs_refcount_count(&arc_mfu_ghost->arcs_esize[type]));
-		total_evicted += arc_evict_impl(arc_mfu_ghost, 0, delta, type);
+		uint64_t evicted = arc_evict_impl(arc_mfu_ghost, 0, delta, type);
+		total_evicted += evicted;
+		adjustment -= evicted;
 	}
 
 	/*
@@ -4435,7 +4464,7 @@ restart:
 	 * meta buffers.  Requests to the upper layers will be made with
 	 * increasingly large scan sizes until the ARC is below the limit.
 	 */
-	if (meta_used > arc_meta_limit) {
+	if (adjustment > 0) {
 		if (type == ARC_BUFC_DATA) {
 			type = ARC_BUFC_METADATA;
 		} else {
@@ -4449,6 +4478,10 @@ restart:
 
 		if (restarts > 0) {
 			restarts--;
+			/* todo?  after a couple of restarts we should check
+			   that we're actually making progress (and zfs_arc_meta_prune >0)
+			   otherwise we're going to go through this loop 1000s of times
+			   for no purpose */
 			goto restart;
 		}
 	}
