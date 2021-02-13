@@ -195,7 +195,6 @@ extern int zfsfstype;
 
 extern int zfs_znode_parent_and_name(struct znode *zp, struct znode **dzpp,
     char *buf);
-extern void	zfs_inode_update(struct znode *);
 #ifdef	__cplusplus
 }
 #endif
