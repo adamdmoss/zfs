@@ -1024,7 +1024,7 @@ zfs_write_async_epilogue(zfs_write_state_t *state)
 	int rc = uio->uio_error;
 
 	if (state->zws_lr) {
-		zfs_inode_update(state->zws_zp);
+		zfs_znode_update_vfs(state->zws_zp);
 		zfs_rangelock_exit(state->zws_lr);
 	}
 	if (state->zws_dn)
@@ -1240,7 +1240,7 @@ zfs_write_async_resume(zfs_write_state_t *state)
 	if (state->zws_ioflag & (O_SYNC | O_DSYNC) ||
 	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS) {
 		if (state->zws_lr) {
-			zfs_inode_update(state->zws_zp);
+			zfs_znode_update_vfs(state->zws_zp);
 			zfs_rangelock_exit(state->zws_lr);
 			state->zws_lr = NULL;
 		}
