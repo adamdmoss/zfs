@@ -521,6 +521,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				aprint("status was error: %s", ZSTD_getErrorName(status));
 				goto badc;
 			}
+			/*
 			size_t const iremaining = ZSTD_flushStream(cctx, &outBuff); // have to keep calling this until remaining == error or 0
 			if (ZSTD_isError(iremaining))
 			{
@@ -528,19 +529,20 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				aprint("status was error3: %s", ZSTD_getErrorName(iremaining));
 				goto badc;
 			}
+			*/
 			if (outBuff.pos == outBuff.size)
 			{
 				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				//aprint("done(output full, input remains); outpos==outsize");
 				goto badc; // ?
 			}
-			ASSERT3U(iremaining, ==, 0);
+			ASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
 			src_ptr += thisInBuff.pos;
 			ASSERT3U(src_remain, >=, thisInBuff.pos);
 			src_remain -= thisInBuff.pos;
 			if (src_remain == 0)
 			{
-				break; // good, now flush
+				break; // good, now flush/end stream
 			}
 			cond_resched(); // possibly yield before taking next gulp
 		}
