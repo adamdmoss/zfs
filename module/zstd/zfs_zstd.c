@@ -499,19 +499,38 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	}
 	#else
 
+	const size_t MAXGULP = 4096;
+	size_t src_remain = s_len;
+	char* src_ptr = s_start;
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
+	ZSTD_inBuffer inBuff;
 	{
-		//aprint("HERE WE GOOOOO");
 		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
-		ZSTD_inBuffer inBuff = {s_start, s_len, 0};
-		size_t status = ZSTD_compressStream(cctx, &outBuff, &inBuff);
-		if (ZSTD_isError(status))
+		for(;;)
 		{
-			compressedSize = status;
-			aprint("status was error: %s", ZSTD_getErrorName(status));
-			goto badc;
+			size_t this_gulp_size = MAXGULP;
+			if (src_remain < this_gulp_size)
+				this_gulp_size = src_remain;
+			ASSERT3U(src_remain, >=, 0);
+			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
+			size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
+			inBuff = thisInBuff;
+			if (ZSTD_isError(status))
+			{
+				compressedSize = status;
+				aprint("status was error: %s", ZSTD_getErrorName(status));
+				goto badc;
+			}
+			ASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
+			src_ptr += this_gulp_size;
+			ASSERT3U(src_remain, >=, this_gulp_size);
+			src_remain -= this_gulp_size;
+			if (src_remain == 0)
+			{
+				break; // good, now flush
+			}
 		}
-		
+
 		int flushpass=1;
 		for(int i=0;i<1;++i)
 		//for (;;)
