@@ -378,7 +378,7 @@ dmu_read_pages_buf_set_transfer(dmu_buf_set_t *dbs)
 			break;
 		}
 		ASSERT(m->dirty == 0);
-		ASSERT(!pmap_page_is_mapped(m));
+		ASSERT(!pmap_page_is_write_mapped(m));
 
 		ASSERT(db->db_size > PAGE_SIZE);
 		bufoff = IDX_TO_OFF(m->pindex) % db->db_size;
