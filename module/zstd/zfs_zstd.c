@@ -38,10 +38,11 @@
  * [1] Portions of this software were developed by Allan Jude
  *     under sponsorship from the FreeBSD Foundation.
  */
-
-#include <sys/param.h>
-#include <sys/sysmacros.h>
-#include <sys/zfs_context.h>
+//#define MODULE
+//#undef __KERNEL__
+//#include <sys/param.h>
+//#include <sys/sysmacros.h>
+///#include <sys/zfs_context.h>
 #include <sys/zio_compress.h>
 #include <sys/spa.h>
 #include <sys/zstd/zstd.h>
@@ -49,6 +50,34 @@
 #define	ZSTD_STATIC_LINKING_ONLY
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
+//#include <linux/printk.h>
+
+//#define __KERNEL__
+#include <sys/debug.h>
+#include <sys/sysmacros.h>
+
+
+extern	int printk(const char *fmt, ...);
+#ifdef __KERNEL__
+#define aprint printk
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+
+//#define __KERNEL__
+//#include <linux/kernel.h>
+//#include <linux/module.h>
+//#include <linux/fs.h>
+//#include <asm/uaccess.h> // for put_user //
+//#include <linux/ioport.h>
+
+////#include <linux/tracepoint.h>
+////#include "linux/kernel.h"
+//#include <linux/kernel.h>
+//#include <sys/klog.h>
+//#include <sys/zfs_debug.h>
+//#include <linux/module.h>
+//#include <linux/kernel.h>
 
 kstat_t *zstd_ksp = NULL;
 
@@ -407,10 +436,161 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
+#if 0
 	c_len = ZSTD_compress2(cctx,
 	    hdr->data,
 	    d_len - sizeof (*hdr),
 	    s_start, s_len);
+#else
+
+	#if 0
+	ZSTD_outBuffer output = {hdr->data, d_len - sizeof(*hdr), 0};
+	for (;;)
+	{
+		/* read loop */
+		ZSTD_inBuffer input = {s_start, s_len, 0};
+		int const finalChunkIn = 1;
+		//ZSTD_EndDirective const flushmode = finalChunkIn ? ZSTD_e_end : ZSTD_e_continue;
+		int finishedWrite = 0;
+		do {
+			/* write loop */
+			size_t status = ZSTD_compressStream(cctx, &output, &input/*, flushmode*/);
+			if (ZSTD_isError(status))
+			{
+				c_len = status;
+				finishedWrite = 1;
+			}
+			else if (finalChunkIn)
+			{
+				size_t const remainingToWrite = ZSTD_endStream(cctx, &output);
+				if (remainingToWrite != 0)
+				{
+					// frame not flushed, ran out of write space?
+					c_len = ZSTD_error_dstSize_tooSmall;
+				}
+				else
+				{
+					c_len = output.pos;
+				}
+				finishedWrite = 1;
+			}
+			/*
+			finishedWrite = ZSTD_isError(remaining) || (output.pos == output.size) || (finalChunkIn ? (remaining == 0) : (input.pos == input.size));
+			int const outputLimitReached = output.pos == output.size;
+			if (outputLimitReached)
+			{
+				remaining = ZSTD_error_dstSize_tooSmall;
+			}
+			if (ZSTD_isError(remaining))
+			{
+				c_len = remaining;
+			}
+			else
+			{
+				c_len = output.pos;
+			}
+			*/
+		} while (!finishedWrite);
+		//ASSERT3U(input.pos, ==, input.size);
+		if (finalChunkIn)
+		{
+				break;
+		}
+	}
+	#else
+
+	const size_t MAXGULP = 4096;
+	size_t src_remain = s_len;
+	char* src_ptr = s_start;
+	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
+	ZSTD_inBuffer inBuff;
+	{
+		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
+		for(;;)
+		{
+			size_t this_gulp_size = MAXGULP;
+			if (src_remain < this_gulp_size)
+				this_gulp_size = src_remain;
+			ASSERT3U(src_remain, >, 0);
+			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
+			size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
+			inBuff = thisInBuff;
+			if (ZSTD_isError(status))
+			{
+				compressedSize = status;
+				aprint("status was error: %s", ZSTD_getErrorName(status));
+				goto badc;
+			}
+			size_t const iremaining = ZSTD_flushStream(cctx, &outBuff); // have to keep calling this until remaining == error or 0
+			if (ZSTD_isError(iremaining))
+			{
+				compressedSize = iremaining;
+				aprint("status was error3: %s", ZSTD_getErrorName(iremaining));
+				goto badc;
+			}
+			if (outBuff.pos == outBuff.size)
+			{
+				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				//aprint("done(output full, input remains); outpos==outsize");
+				goto badc; // ?
+			}
+			ASSERT3U(iremaining, ==, 0);
+			src_ptr += thisInBuff.pos;
+			ASSERT3U(src_remain, >=, thisInBuff.pos);
+			src_remain -= thisInBuff.pos;
+			if (src_remain == 0)
+			{
+				break; // good, now flush
+			}
+			cond_resched(); // possibly yield before taking next gulp
+		}
+
+		int flushpass=1;
+		for(int i=0;i<1;++i)
+		//for (;;)
+		{
+			size_t const remaining = ZSTD_endStream(cctx, &outBuff); // have to keep calling this until remaining == error or 0
+			if (ZSTD_isError(remaining))
+			{
+				compressedSize = remaining;
+				aprint("status was error2: %s", ZSTD_getErrorName(remaining));
+				goto badc;
+			}
+			//aprint("input remaining was: %zu", remaining);
+			if (remaining == 0)
+			{
+				//aprint("done; none remaining");
+				if (inBuff.pos != inBuff.size)
+				{
+					aprint("WHUT!!!!!  none remaining but input not consumed?");
+				}
+				ASSERT3U(inBuff.pos, ==, inBuff.size);
+				break; // really done
+			}
+			if (outBuff.pos == outBuff.size)
+			{
+				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				//aprint("done(output full, input remains); outpos==outsize");
+				goto badc; // ?
+			}
+			if (inBuff.pos == inBuff.size)
+			{
+				aprint("done; inpos==insize");
+				aprint("WHUT!!!!!  but remaining > 0....?");
+				ASSERT3U(remaining, ==, 0);
+				break; // ?
+			}
+			aprint("finished flushpass#%d", flushpass++);
+		}
+
+		compressedSize = outBuff.pos;
+	}
+badc:
+	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	c_len = compressedSize;
+
+#endif
+#endif
 
 	ZSTD_freeCCtx(cctx);
 
@@ -421,8 +601,14 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		 * too small, that is not a failure. Everything else is a
 		 * failure, so increment the compression failure counter.
 		 */
-		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall) {
+		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall)
+		{
+			aprint("ERROR status... ending");
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
+		}
+		else
+		{
+			//aprint("(dest was too small?)... ending");
 		}
 		return (s_len);
 	}
