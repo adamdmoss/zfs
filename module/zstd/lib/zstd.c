@@ -1,10 +1,3 @@
-
-#if _KERNEL
-extern int _cond_resched(void);
-#define cond_resched() _cond_resched()
-#else
-#define cond_resched() do{}while(0)
-#endif
 /*
  * BSD 3-Clause Clear License
  *
@@ -18857,7 +18850,6 @@ static U32 ZSTD_insertAndFindFirstIndex_internal(
         hashTable[h] = idx;
         idx++;
     }
-    cond_resched();
 
     ms->nextToUpdate = target;
     return hashTable[ZSTD_hashPtr(ip, hashLog, mls)];
@@ -19120,7 +19112,6 @@ ZSTD_compressBlock_lazy_generic(
         /* let's try to find a better solution */
         if (depth>=1)
         while (ip<ilimit) {
-            cond_resched();
             ip ++;
             if ( (dictMode == ZSTD_noDict)
               && (offset) && ((offset_1>0) & (MEM_read32(ip) == MEM_read32(ip - offset_1)))) {
