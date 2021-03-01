@@ -513,7 +513,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				this_gulp_size = src_remain;
 			ASSERT3U(src_remain, >, 0);
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
-			size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
+			// I think ZSTD_compressStream implicitly flushes - try compressStream2?
+			//size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
+			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff, ZSTD_e_continue);
 			inBuff = thisInBuff;
 			if (ZSTD_isError(status))
 			{
@@ -544,9 +546,14 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			{
 				break; // good, now flush/end stream
 			}
+#ifdef __KERNEL__
+			//kpreempt();
+#else
+#endif
 			cond_resched(); // possibly yield before taking next gulp
 		}
-
+		(void)inBuff;
+#if 1
 		int flushpass=1;
 		for(int i=0;i<1;++i)
 		//for (;;)
@@ -584,7 +591,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			}
 			aprint("finished flushpass#%d", flushpass++);
 		}
-
+#endif
 		compressedSize = outBuff.pos;
 	}
 badc:
