@@ -441,24 +441,26 @@ static void* GrabCCtx(void)
 					mutex_enter(&cctx_pool.listlocks[0]);
 					++cctx_pool.count;
 					//aprint("ADAM: 8");
+
+					// total success
+					aprint("ADAM: expanded lists and grabbed new entry %p", found);
 				}
 				else
 				{
 					kmem_free(newlist, newlistbytes);
-					//aprint("ADAM: failed to alloc new locklist");
+					aprint("ADAM: failed to alloc new locklist");
 				}
 			}
 			else
 			{
 				kmem_free(newlist, newlistbytes);
-				//aprint("ADAM: failed to alloc new cctx for list");
+				aprint("ADAM: failed to alloc new cctx for list");
 			}
 		}
 		else
 		{
 			aprint("ADAM: failed to alloc larger list");
 		}
-		aprint("ADAM: expanded lists and grabbed new entry %p", found);
 	}
 	mutex_exit(&cctx_pool.outerlock);
 	return found;
@@ -472,7 +474,7 @@ static void UnGrabCCtx(void* cctx)
 		{
 			if (mutex_tryenter(&cctx_pool.listlocks[i]))
 			{
-				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p", cctx);
+				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", cctx);
 			}
 			mutex_exit(&cctx_pool.listlocks[i]);
 		}
