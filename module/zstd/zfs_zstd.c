@@ -381,6 +381,7 @@ static struct
 	kmutex_t* listlocks;
 	void** list;
 } cctx_pool;
+
 static void* GrabCCtx(void)
 {
 	void* found = NULL;
@@ -395,7 +396,8 @@ static void* GrabCCtx(void)
 	}
 	if (likely(found!=NULL))
 	{
-		ZSTD_CCtx_reset(found, ZSTD_reset_session_and_parameters);
+		// slightly subtle optimization; compressor needs to reset *stream* (only on error), we reset *parameters*
+		ZSTD_CCtx_reset(found, ZSTD_reset_parameters);
 	}
 	else
 	{
@@ -404,20 +406,20 @@ static void* GrabCCtx(void)
 		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
 		if (likely(newlist!=NULL))
 		{
-			aprint("ADAM: 1");
+			//aprint("ADAM: 1");
 			newlist[0] = ZSTD_createCCtx_advanced(zstd_malloc);
-			aprint("ADAM: 2");
+			//aprint("ADAM: 2");
 			if (likely(newlist[0]!=NULL))
 			{
-				aprint("ADAM: 3");
+				//aprint("ADAM: 3");
 				int newlocklistbytes = sizeof(kmutex_t) * (cctx_pool.count + 1);
 				kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
-				aprint("ADAM: 4");
+				//aprint("ADAM: 4");
 				if (likely(newlocklist!=NULL))
 				{
-					aprint("ADAM: 5");
+					//aprint("ADAM: 5");
 					mutex_init(&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
-					aprint("ADAM: 6");
+					//aprint("ADAM: 6");
 					if (likely(cctx_pool.count > 0))
 					{
 						ASSERT3U(cctx_pool.list, !=, NULL);
@@ -432,24 +434,24 @@ static void* GrabCCtx(void)
 						ASSERT3U(cctx_pool.list, ==, NULL);
 						ASSERT3U(cctx_pool.listlocks, ==, NULL);
 					}
-					aprint("ADAM: 7");
+					//aprint("ADAM: 7");
 					cctx_pool.list = newlist;
 					cctx_pool.listlocks = newlocklist;
 					found = cctx_pool.list[0];
 					mutex_enter(&cctx_pool.listlocks[0]);
 					++cctx_pool.count;
-					aprint("ADAM: 8");
+					//aprint("ADAM: 8");
 				}
 				else
 				{
 					kmem_free(newlist, newlistbytes);
-					aprint("ADAM: failed to alloc new locklist");
+					//aprint("ADAM: failed to alloc new locklist");
 				}
 			}
 			else
 			{
 				kmem_free(newlist, newlistbytes);
-				aprint("ADAM: failed to alloc new cctx for list");
+				//aprint("ADAM: failed to alloc new cctx for list");
 			}
 		}
 		else
@@ -545,69 +547,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-#if 0
-	c_len = ZSTD_compress2(cctx,
-	    hdr->data,
-	    d_len - sizeof (*hdr),
-	    s_start, s_len);
-#else
-
-	#if 0
-	ZSTD_outBuffer output = {hdr->data, d_len - sizeof(*hdr), 0};
-	for (;;)
-	{
-		/* read loop */
-		ZSTD_inBuffer input = {s_start, s_len, 0};
-		int const finalChunkIn = 1;
-		//ZSTD_EndDirective const flushmode = finalChunkIn ? ZSTD_e_end : ZSTD_e_continue;
-		int finishedWrite = 0;
-		do {
-			/* write loop */
-			size_t status = ZSTD_compressStream(cctx, &output, &input/*, flushmode*/);
-			if (ZSTD_isError(status))
-			{
-				c_len = status;
-				finishedWrite = 1;
-			}
-			else if (finalChunkIn)
-			{
-				size_t const remainingToWrite = ZSTD_endStream(cctx, &output);
-				if (remainingToWrite != 0)
-				{
-					// frame not flushed, ran out of write space?
-					c_len = ZSTD_error_dstSize_tooSmall;
-				}
-				else
-				{
-					c_len = output.pos;
-				}
-				finishedWrite = 1;
-			}
-			/*
-			finishedWrite = ZSTD_isError(remaining) || (output.pos == output.size) || (finalChunkIn ? (remaining == 0) : (input.pos == input.size));
-			int const outputLimitReached = output.pos == output.size;
-			if (outputLimitReached)
-			{
-				remaining = ZSTD_error_dstSize_tooSmall;
-			}
-			if (ZSTD_isError(remaining))
-			{
-				c_len = remaining;
-			}
-			else
-			{
-				c_len = output.pos;
-			}
-			*/
-		} while (!finishedWrite);
-		//ASSERT3U(input.pos, ==, input.size);
-		if (finalChunkIn)
-		{
-				break;
-		}
-	}
-	#else
-
 	const size_t MAXGULP = 4096;
 	size_t src_remain = s_len;
 	char* src_ptr = s_start;
@@ -630,21 +569,16 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			{
 				compressedSize = status;
 				aprint("status was error: %s", ZSTD_getErrorName(status));
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc;
 			}
-			/*
-			size_t const iremaining = ZSTD_flushStream(cctx, &outBuff); // have to keep calling this until remaining == error or 0
-			if (ZSTD_isError(iremaining))
-			{
-				compressedSize = iremaining;
-				aprint("status was error3: %s", ZSTD_getErrorName(iremaining));
-				goto badc;
-			}
-			*/
 			if (outBuff.pos == outBuff.size)
 			{
 				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				//aprint("done(output full, input remains); outpos==outsize");
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
 			ASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
@@ -672,6 +606,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			{
 				compressedSize = remaining;
 				aprint("status was error2: %s", ZSTD_getErrorName(remaining));
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc;
 			}
 			//aprint("input remaining was: %zu", remaining);
@@ -689,6 +625,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			{
 				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				//aprint("done(output full, input remains); outpos==outsize");
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
 			if (inBuff.pos == inBuff.size)
@@ -706,9 +644,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 badc:
 	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
-
-#endif
-#endif
 
 	UnGrabCCtx(cctx);//ZSTD_freeCCtx(cctx);
 
