@@ -547,10 +547,10 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				break; // good, now flush/end stream
 			}
 #ifdef __KERNEL__
-			kpreempt();
+			//kpreempt();
 #else
 #endif
-			//cond_resched(); // possibly yield before taking next gulp
+			cond_resched(); // possibly yield before taking next gulp
 		}
 		(void)inBuff;
 #if 1
