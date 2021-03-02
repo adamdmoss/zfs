@@ -1016,7 +1016,8 @@ zstd_mempool_deinit(void)
 		if (!mutex_tryenter(&cctx_pool.listlocks[i]))
 		{
 			aprint("ADAM: nuts, trying to deinit pool but idx#%d still locked, waiting for it to unlock...", i);
-			mutex_enter(&cctx_pool.listlocks[i]);
+			//mutex_enter(&cctx_pool.listlocks[i]);
+			// ^ nope, not while holding outerlock - need to restart outer loop
 		}
 		ZSTD_freeCCtx(cctx_pool.list[i]);
 		mutex_exit(&cctx_pool.listlocks[i]);
