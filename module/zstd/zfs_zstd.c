@@ -389,6 +389,7 @@ static void* GrabCCtx(void)
 	mutex_enter(&cctx_pool.outerlock);
 	for (int i=0; i<cctx_pool.count; ++i)
 	{
+		XASSERT3U(cctx_pool.list[i], !=, NULL);
 		if (mutex_tryenter(&cctx_pool.listlocks[i]))
 		{
 			found = cctx_pool.list[i];
@@ -470,6 +471,7 @@ static void* GrabCCtx(void)
 }
 static void UnGrabCCtx(void* cctx)
 {
+	XASSERT3U(cctx, !=, NULL);
 	mutex_enter(&cctx_pool.outerlock);
 	for (int i = 0; i < cctx_pool.count; ++i)
 	{
@@ -480,6 +482,7 @@ static void UnGrabCCtx(void* cctx)
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", cctx);
 			}
 			mutex_exit(&cctx_pool.listlocks[i]);
+			break;
 		}
 	}
 	mutex_exit(&cctx_pool.outerlock);
