@@ -317,7 +317,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s(%lld) %s %s(%lld) failed", #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s:%s():%s %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 /* set with ZFS_DEBUG=watch, to enable watchpoints on frozen buffers */
 boolean_t arc_watch = B_FALSE;
@@ -4380,7 +4380,8 @@ static uint64_t
 arc_evict_meta_balanced(uint64_t meta_used)
 {
 	boolean_t making_progress;
-	int64_t prune = 0, adjustment_remaining;
+	int64_t adjustment_remaining;
+	/*static*/ int64_t prune = 0; // persists across calls until we get what we want!  experimental - will this become too aggressive?  static probably naughty too, but the worst that happens after re-init is we start off very aggressive...?
 	uint64_t total_evicted = 0;
 	arc_buf_contents_t type = ARC_BUFC_METADATA;
 	/*
@@ -4489,9 +4490,9 @@ restart:
 			if (zfs_arc_meta_prune) {
 				prune += zfs_arc_meta_prune;
 				arc_prune_async(prune);
-				aprint("waiting for prunes...");
-				taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, a arc_prune_sync()
-				aprint("done waiting for prune.");
+				////aprint("waiting for prunes...");
+				//taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, a arc_prune_sync()
+				////aprint("done waiting for prune.");
 				making_progress = B_TRUE; // /ᐠ｡ꞈ｡ᐟ\ _(LYING) 
 			}
 		}
@@ -4511,10 +4512,15 @@ restart:
 			}
 			else
 			{
-				aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_reminaing=%ld) with possible %d restarts left (%d restarts done), giving up for now",
+				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_reminaing=%ld) with possible %d restarts left (%d restarts done), giving up for now",
 				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
 			}
 		}
+	}
+	else
+	{
+		// totally cleared enough!
+		prune = 0; // reset prune aggressiveness
 	}
 	return (total_evicted);
 }
