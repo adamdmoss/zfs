@@ -448,6 +448,7 @@ static void* GrabCCtx(void)
 				}
 				else
 				{
+					ZSTD_freeCCtx(newlist[0]);
 					kmem_free(newlist, newlistbytes);
 					aprint("ADAM: failed to alloc new locklist");
 				}
@@ -462,6 +463,7 @@ static void* GrabCCtx(void)
 		{
 			aprint("ADAM: failed to alloc larger list");
 		}
+		aprint("ADAM: resulting cctx is %p", found);
 	}
 	mutex_exit(&cctx_pool.outerlock);
 	return found;
