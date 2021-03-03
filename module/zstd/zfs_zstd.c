@@ -63,6 +63,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
+#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprintf("ADAM ASSERT FAILURE: %s(%lld) %s %s(%lld) failed", #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 //#define __KERNEL__
 //#include <linux/kernel.h>
@@ -422,8 +423,8 @@ static void* GrabCCtx(void)
 					//aprint("ADAM: 6");
 					if (likely(cctx_pool.count > 0))
 					{
-						ASSERT3U(cctx_pool.list, !=, NULL);
-						ASSERT3U(cctx_pool.listlocks, !=, NULL);
+						XASSERT3U(cctx_pool.list, !=, NULL);
+						XASSERT3U(cctx_pool.listlocks, !=, NULL);
 						memcpy(&newlist[1], &cctx_pool.list[0], sizeof(void *) * (cctx_pool.count));
 						memcpy(&newlocklist[1], &cctx_pool.listlocks[0], sizeof(kmutex_t) * cctx_pool.count);
 						kmem_free(cctx_pool.list, sizeof(void *) * (cctx_pool.count));
@@ -431,8 +432,8 @@ static void* GrabCCtx(void)
 					}
 					else
 					{
-						ASSERT3U(cctx_pool.list, ==, NULL);
-						ASSERT3U(cctx_pool.listlocks, ==, NULL);
+						XASSERT3U(cctx_pool.list, ==, NULL);
+						XASSERT3U(cctx_pool.listlocks, ==, NULL);
 					}
 					//aprint("ADAM: 7");
 					cctx_pool.list = newlist;
@@ -521,9 +522,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		return (s_len);
 	}
 
-	ASSERT3U(d_len, >=, sizeof (*hdr));
-	ASSERT3U(d_len, <=, s_len);
-	ASSERT3U(zstd_level, !=, 0);
+	XASSERT3U(d_len, >=, sizeof (*hdr));
+	XASSERT3U(d_len, <=, s_len);
+	XASSERT3U(zstd_level, !=, 0);
 
 	cctx = GrabCCtx();//ZSTD_createCCtx_advanced(zstd_malloc);
 
@@ -561,7 +562,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			size_t this_gulp_size = MAXGULP;
 			if (src_remain < this_gulp_size)
 				this_gulp_size = src_remain;
-			ASSERT3U(src_remain, >, 0);
+			XASSERT3U(src_remain, >, 0);
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
 			// I think ZSTD_compressStream implicitly flushes - try compressStream2?
 			//size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
@@ -583,9 +584,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
-			ASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
+			XASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
 			src_ptr += thisInBuff.pos;
-			ASSERT3U(src_remain, >=, thisInBuff.pos);
+			XASSERT3U(src_remain, >=, thisInBuff.pos);
 			src_remain -= thisInBuff.pos;
 			if (src_remain == 0)
 			{
@@ -620,7 +621,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				{
 					aprint("WHUT!!!!!  none remaining but input not consumed?");
 				}
-				ASSERT3U(inBuff.pos, ==, inBuff.size);
+				XASSERT3U(inBuff.pos, ==, inBuff.size);
 				break; // really done
 			}
 			if (outBuff.pos == outBuff.size)
@@ -635,7 +636,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			{
 				aprint("done; inpos==insize");
 				aprint("WHUT!!!!!  but remaining > 0....?");
-				ASSERT3U(remaining, ==, 0);
+				XASSERT3U(remaining, ==, 0);
 				break; // ?
 			}
 			aprint("finished flushpass#%d", flushpass++);
@@ -681,7 +682,7 @@ badc:
 	 * The limit of 24 bits must not be exceeded. This allows a maximum
 	 * version 1677.72.15 which we don't expect to be ever reached.
 	 */
-	ASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
+	XASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
 
 	/*
 	 * Encode the compression level as well. We may need to know the
@@ -743,8 +744,8 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	ASSERT3U(d_len, >=, s_len);
-	ASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
+	XASSERT3U(d_len, >=, s_len);
+	XASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
 
 	/* Invalid compressed buffer size encoded at start */
 	if (c_len + sizeof (*hdr) > s_len) {
@@ -863,8 +864,8 @@ zstd_free(void *opaque __maybe_unused, void *ptr)
 	struct zstd_kmem *z = (ptr - sizeof (struct zstd_kmem));
 	enum zstd_kmem_type type;
 
-	ASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
-	ASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
+	XASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
+	XASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
 
 	type = z->kmem_type;
 	switch (type) {
@@ -961,15 +962,15 @@ zstd_mempool_deinit(void)
 	}
 	if (cctx_pool.count > 0)
 	{
-		ASSERT3U(cctx_pool.list, !=, NULL);
-		ASSERT3U(cctx_pool.listlocks, !=, NULL);
+		XASSERT3U(cctx_pool.list, !=, NULL);
+		XASSERT3U(cctx_pool.listlocks, !=, NULL);
 		kmem_free(cctx_pool.list, sizeof(void *) * cctx_pool.count);
 		kmem_free(cctx_pool.listlocks, sizeof(kmutex_t) * cctx_pool.count);
 	}
 	else
 	{
-		ASSERT3U(cctx_pool.list, ==, NULL);
-		ASSERT3U(cctx_pool.listlocks, ==, NULL);
+		XASSERT3U(cctx_pool.list, ==, NULL);
+		XASSERT3U(cctx_pool.listlocks, ==, NULL);
 	}
 	cctx_pool.count = 0;
 	cctx_pool.list = NULL;
