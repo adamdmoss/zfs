@@ -63,7 +63,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s(%lld) %s %s(%lld) failed", #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s:%s():%s %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 //#define __KERNEL__
 //#include <linux/kernel.h>
