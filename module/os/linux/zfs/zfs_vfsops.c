@@ -1203,7 +1203,10 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int objects = 0;
 	int i = 0, j = 0;
 
+	static int recursion = 0;
 	{
+		XASSERT3(recursion, ==, 0);
+
 		static int done = 0;
 		if (!done)
 		{
@@ -1211,6 +1214,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 			aprint("ADAM: HUZZAH, we're using zfs_prune_aliases");
 		}
 	}
+	recursion++;
 
 	zp_array = kmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
 
@@ -1230,12 +1234,16 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 
 		/* Skip active znodes (why...?) */
 		if (!mutex_tryenter(&zp->z_lock))
+		{
+			aprint("prune: skipping znode with modlock");
 			continue;
+		}
 
 		/* Add a ref while it's in our array */
 		if (igrab(ZTOI(zp)) == NULL)
 		{
 			mutex_exit(&zp->z_lock);
+			aprint("prune: skipping znode already being freed");
 			continue;
 		}
 
@@ -1250,7 +1258,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		ASSERT3P(zp, !=, NULL);
 		d_prune_aliases(ZTOI(zp));
 
-		/* check if we're the last reference now, which will mean zrele() can free this */
+		/* check if we're the last reference now, which will mean zrele() will free this */
 		if (atomic_read(&ZTOI(zp)->i_count) == 1)
 			objects++;
  
@@ -1260,6 +1268,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 
 	kmem_free(zp_array, max_array * sizeof (znode_t *));
 
+	recursion--;
 	return (objects);
 }
 
