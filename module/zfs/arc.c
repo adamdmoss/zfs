@@ -4415,6 +4415,10 @@ arc_evict_meta_balanced(uint64_t meta_used)
 	int restarts_remaining = zfs_arc_meta_adjust_restarts;
 	int restarts_done = 0;
 
+	static int recursion = 0;
+	XASSERT3(recursion, ==, 0);
+	recursion++;
+
 	uint64_t meta_target = arc_meta_limit;
 
 	// at least limit the target metadata size to the whole arc target size too!
@@ -4514,7 +4518,7 @@ restart:
 				&& prune_tries <= MAX_PRUNE_TRIES
 				&& zfs_arc_meta_prune > 0) {
 				prune += zfs_arc_meta_prune;
-				aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for %d node prunes...", (int)prune_tries, (int)restarts_done, (int)prune);
+				if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);
 				++prune_tries;
 				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
@@ -4549,7 +4553,7 @@ restart:
 			}
 			else
 			{
-				aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
+				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
 				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
 			}
 		}
@@ -4559,6 +4563,7 @@ restart:
 		// totally cleared enough!
 		prune = 0; // reset prune aggressiveness
 	}
+	recursion--;
 	return (total_evicted);
 }
 
@@ -4706,7 +4711,6 @@ arc_evict(void)
 	uint64_t total_evicted = 0;
 	uint64_t bytes;
 	int64_t target;
-	uint64_t asize = aggsum_value(&arc_size);
 	uint64_t ameta = aggsum_value(&arc_meta_used);
 
 	/*
@@ -4714,6 +4718,14 @@ arc_evict(void)
 	 * potentially evicting data buffers below.
 	 */
 	total_evicted += arc_evict_meta(ameta);
+
+	// (re)count metadata+data after arc_evict_meta()
+	if (total_evicted > 0)
+	{
+		ameta = aggsum_value(&arc_meta_used);
+	}
+
+	uint64_t asize = aggsum_value(&arc_size);
 
 	/*
 	 * Adjust MRU size
@@ -4815,7 +4827,7 @@ arc_evict(void)
 
 			/*
 		 * If we couldn't evict our target number of bytes from
-		 * data, we try to get the rest from data.
+		 * data, we try to get the rest from metadata.
 		 */
 			target -= bytes;
 
