@@ -4381,18 +4381,14 @@ arc_evict_impl(arc_state_t *state, uint64_t spa, int64_t bytes,
 static uint64_t
 arc_evict_meta_balanced(uint64_t meta_used)
 {
+	const int MAX_PRUNE_TRIES = 8;
 	boolean_t making_progress;
 	int64_t adjustment_remaining;
 	/*static*/ int64_t prune = 0; // persists across calls until we get what we want!  experimental - will this become too aggressive?  static probably naughty too, but the worst that happens after re-init is we start off very aggressive...?
 	uint64_t total_evicted = 0;
+	int prune_tries = 0;
 	arc_buf_contents_t type = ARC_BUFC_METADATA;
-	/*
-	 * >= 2 restarts ensures we at least try evicting metadata
-	 * first, then restart with data if that wasn't enough (to
-	 * unhold more metadata), then restart to try at newly-unheld
-	 * metadata.
-	 */
-	int restarts_remaining = MAX(zfs_arc_meta_adjust_restarts, 2);
+	int restarts_remaining = zfs_arc_meta_adjust_restarts;
 	int restarts_done = 0;
 
 	uint64_t meta_target = arc_meta_limit;
@@ -4485,36 +4481,51 @@ restart:
 	 */
 	if (adjustment_remaining > 0) {
 		if (type == ARC_BUFC_DATA) {
+			// if we're just freed some data and we're still over budget, then potentially try again with metadata since freeing up data can make more metadata freeable
 			type = ARC_BUFC_METADATA;
 		} else {
-			type = ARC_BUFC_DATA;
 
-			if (zfs_arc_meta_prune) {
+			// IFF we tried and failed to find some freeable metadata, then prune from the upper layers to potentially allow more metadata to be freeable
+			if (!making_progress
+				&& prune_tries <= MAX_PRUNE_TRIES
+				&& zfs_arc_meta_prune > 0) {
 				prune += zfs_arc_meta_prune;
+				aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for %d node prunes...", (int)prune_tries, (int)restarts_done, (int)prune);
+				++prune_tries;
+				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
 				////aprint("waiting for prunes...");
-				//taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, a arc_prune_sync()
+				taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, arc_prune_sync().  if this is dodgy then we should cond_resched() somewhere in the restart-loop
 				////aprint("done waiting for prune.");
-				making_progress = B_TRUE; // /ᐠ｡ꞈ｡ᐟ\ _(LYING) 
+
+				// now we try a restart with type == ARC_BUFC_METADATA again
 			}
+			else
+			{
+				// if we are totally out of options for freeing metadata then restart while trying to free data, which may in turn free-up more metadata for later
+				type = ARC_BUFC_DATA;
+			}
+
+			making_progress = B_TRUE; // /ᐠ｡ꞈ｡ᐟ\ _(LYING); we MIGHT make progress now, so ensure at least one more restart to find out
 		}
 
-		if (restarts_remaining > 0) {
-			/* after a couple of restarts we should check
-			   that we're actually making progress (and zfs_arc_meta_prune >0)
-			   otherwise we might go through this loop 1000s of times
-			   for no purpose */
-			if ((restarts_done < 2) ||
-			    (making_progress && zfs_arc_meta_prune>0))
+		/*
+		 * >= 2 restarts ensures we at least try evicting metadata
+		 * first, then restart with data if that wasn't enough (to
+		 * unhold more metadata), then restart to try at newly-unheld
+		 * metadata.
+		 */
+		if (restarts_remaining > 0 || restarts_done < 2) {
+			if (making_progress)
 			{
 				restarts_remaining--;
 				restarts_done++;
-				cond_resched(); // maybe not necessary, trying
+				//cond_resched(); // maybe not necessary, trying
 				goto restart;
 			}
 			else
 			{
-				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_reminaing=%ld) with possible %d restarts left (%d restarts done), giving up for now",
+				aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
 				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
 			}
 		}
