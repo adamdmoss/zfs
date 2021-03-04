@@ -4693,9 +4693,11 @@ arc_evict(void)
 	target = MIN((int64_t)(asize - arc_c),
 	    (int64_t)(zfs_refcount_count(&arc_anon->arcs_size) +
 	    zfs_refcount_count(&arc_mru->arcs_size) + ameta - arc_p));
-	XASSERT3U(target, >, 0);
+	XASSERT3(target, >=, 0);
 
-	/*
+	if (target > 0)
+	{
+		/*
 	 * If we're below arc_meta_min, always prefer to evict data.
 	 * Otherwise, try to satisfy the requested number of bytes to
 	 * evict from the type which contains older buffers; in an
@@ -4703,35 +4705,37 @@ arc_evict(void)
 	 * type. If we cannot satisfy the number of bytes from this
 	 * type, spill over into the next type.
 	 */
-	if (arc_evict_type(arc_mru) == ARC_BUFC_METADATA &&
-	    ameta > arc_meta_min) {
-		bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
-		total_evicted += bytes;
+		if (arc_evict_type(arc_mru) == ARC_BUFC_METADATA &&
+			ameta > arc_meta_min)
+		{
+			bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * metadata, we try to get the rest from data.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		XASSERT3U(target, >, 0);
-		if (target > 0)
-		    total_evicted +=
-			    arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
-	} else {
-		bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
-		total_evicted += bytes;
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
+		}
+		else
+		{
+			bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * data, we try to get the rest from metadata.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		XASSERT3U(target, >, 0);
-		if (target > 0)
-			total_evicted +=
-		        arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+		}
 	}
 
 	/*
@@ -4749,37 +4753,41 @@ arc_evict(void)
 	 * size, we evict the rest from the MFU.
 	 */
 	target = asize - arc_c;
-	XASSERT3U(target, >, 0);
+	XASSERT3(target, >=, 0);
 
-	if (arc_evict_type(arc_mfu) == ARC_BUFC_METADATA &&
-	    ameta > arc_meta_min) {
-		bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
-		total_evicted += bytes;
+	if (target > 0)
+	{
+		if (arc_evict_type(arc_mfu) == ARC_BUFC_METADATA &&
+			ameta > arc_meta_min)
+		{
+			bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * metadata, we try to get the rest from data.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		XASSERT3U(target, >, 0);
-		if (target > 0)
-			total_evicted +=
-			    arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
-	} else {
-		bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
-		total_evicted += bytes;
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
+		}
+		else
+		{
+			bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * data, we try to get the rest from data.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		XASSERT3U(target, >, 0);
-		if (target > 0)
-			total_evicted +=
-			    arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+		}
 	}
 
 	/*
@@ -4795,17 +4803,19 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru->arcs_size) +
 	    zfs_refcount_count(&arc_mru_ghost->arcs_size) - arc_c;
-	XASSERT3U(target, >, 0);
+	XASSERT3U(target, >=, 0);
 
-	bytes = arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_DATA);
-	total_evicted += bytes;
-
-	target -= bytes;
-
-	XASSERT3U(target, >, 0);
 	if (target > 0)
-		total_evicted +=
-		    arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_METADATA);
+	{
+		bytes = arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_DATA);
+		total_evicted += bytes;
+
+		target -= bytes;
+
+		if (target > 0)
+			total_evicted +=
+				arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_METADATA);
+	}
 
 	/*
 	 * We assume the sum of the mru list and mfu list is less than
@@ -4817,17 +4827,19 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru_ghost->arcs_size) +
 	    zfs_refcount_count(&arc_mfu_ghost->arcs_size) - arc_c;
-	XASSERT3U(target, >, 0);
+	XASSERT3U(target, >=, 0);
 
-	bytes = arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_DATA);
-	total_evicted += bytes;
-
-	target -= bytes;
-
-	XASSERT3U(target, >, 0);
 	if (target > 0)
-		total_evicted +=
-		    arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_METADATA);
+	{
+		bytes = arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_DATA);
+		total_evicted += bytes;
+
+		target -= bytes;
+
+		if (target > 0)
+			total_evicted +=
+				arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_METADATA);
+	}
 
 	return (total_evicted);
 }
