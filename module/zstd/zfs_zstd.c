@@ -563,17 +563,21 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
 	ZSTD_inBuffer inBuff;
 	{
+
 		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
 		for(;;)
 		{
+			int is_final_gulp = 0;
 			size_t this_gulp_size = MAXGULP;
-			if (src_remain < this_gulp_size)
+			if (src_remain <= this_gulp_size)
+			{
 				this_gulp_size = src_remain;
+				is_final_gulp = 1;
+			}
 			XASSERT3U(src_remain, >, 0);
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
-			// I think ZSTD_compressStream implicitly flushes - try compressStream2?
-			//size_t status = ZSTD_compressStream(cctx, &outBuff, &thisInBuff);
-			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff, ZSTD_e_continue);
+			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
+			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
 			inBuff = thisInBuff;
 			if (ZSTD_isError(status))
 			{
@@ -585,7 +589,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			}
 			if (outBuff.pos == outBuff.size)
 			{
-				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				//aprint("done(output full, input remains); outpos==outsize");
 
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
@@ -597,7 +601,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			src_remain -= thisInBuff.pos;
 			if (src_remain == 0)
 			{
-				break; // good, now flush/end stream
+				// totally done
+				break;
 			}
 #ifdef __KERNEL__
 			//kpreempt();
@@ -605,53 +610,11 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 #endif
 			cond_resched(); // possibly yield before taking next gulp
 		}
-		(void)inBuff;
-#if 1
-		int flushpass=1;
-		for(int i=0;i<1;++i)
-		//for (;;)
-		{
-			size_t const remaining = ZSTD_endStream(cctx, &outBuff); // have to keep calling this until remaining == error or 0
-			if (ZSTD_isError(remaining))
-			{
-				compressedSize = remaining;
-				aprint("status was error2: %s", ZSTD_getErrorName(remaining));
 
-				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				goto badc;
-			}
-			//aprint("input remaining was: %zu", remaining);
-			if (remaining == 0)
-			{
-				//aprint("done; none remaining");
-				if (inBuff.pos != inBuff.size)
-				{
-					aprint("WHUT!!!!!  none remaining but input not consumed?");
-				}
-				XASSERT3U(inBuff.pos, ==, inBuff.size);
-				break; // really done
-			}
-			if (outBuff.pos == outBuff.size)
-			{
-				compressedSize = /*hack*/ (size_t)-ZSTD_error_dstSize_tooSmall;
-				//aprint("done(output full, input remains); outpos==outsize");
-
-				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				goto badc; // ?
-			}
-			if (inBuff.pos == inBuff.size)
-			{
-				aprint("done; inpos==insize");
-				aprint("WHUT!!!!!  but remaining > 0....?");
-				XASSERT3U(remaining, ==, 0);
-				break; // ?
-			}
-			aprint("finished flushpass#%d", flushpass++);
-		}
-#endif
 		compressedSize = outBuff.pos;
 	}
 badc:
+
 	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
 
