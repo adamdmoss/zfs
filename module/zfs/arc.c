@@ -317,7 +317,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s:%s():%s %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 #ifndef _KERNEL
 /* set with ZFS_DEBUG=watch, to enable watchpoints on frozen buffers */
@@ -4180,6 +4180,11 @@ arc_evict_state_impl(multilist_t *ml, int idx, arc_buf_hdr_t *marker,
 			cv_broadcast(&aw->aew_cv);
 		}
 	}
+	else
+	{
+		if (list_head(&arc_evict_waiters) != NULL)
+			aprint("not enough free memory to wake evict-waiters yet...");
+	}
 	arc_set_need_free();
 	mutex_exit(&arc_evict_lock);
 
@@ -5087,6 +5092,8 @@ arc_evict_cb(void *arg, zthr_t *zthr)
 		 * arc_get_data_impl() sooner.
 		 */
 		arc_evict_waiter_t *aw;
+		if (list_head(&arc_evict_waiters) != NULL)
+			aprint("waking every evict-waiter");
 		while ((aw = list_remove_head(&arc_evict_waiters)) != NULL) {
 			cv_broadcast(&aw->aew_cv);
 		}

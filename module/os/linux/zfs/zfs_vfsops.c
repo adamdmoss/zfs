@@ -68,7 +68,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3U(L,C,R) do{const uintptr_t lll=(L); const uintptr_t rrr=(R); if(!(lll C rrr))aprint("ADAM ASSERT FAILURE: %s:%s():%s %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 enum {
 	TOKEN_RO,
@@ -1233,12 +1233,12 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		/* Skip active znodes (why...?) */
 		if (!mutex_tryenter(&zp->z_lock))
 		{
-			aprint("prune: skipping znode with modlock");
+			//aprint("prune: skipping znode with modlock");
 			continue;
 		}
 
 		/* Add a ref while it's in our array */
-		if (igrab(ZTOI(zp)) == NULL)
+		if (unlikely(igrab(ZTOI(zp)) == NULL))
 		{
 			mutex_exit(&zp->z_lock);
 			aprint("prune: skipping znode already being freed");
