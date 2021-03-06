@@ -335,6 +335,15 @@ zvol_read_task(void *arg)
 	zvol_read(&task->zvr);
 	zv_request_task_free(task);
 }
+
+static void
+zvol_strategy_task(void *arg)
+{
+	zv_request_task_t *task = arg;
+	zvol_strategy(&task->zvr);
+	zv_request_task_free(task);
+}
+
 /*
  * Use another layer on top of zvol_dmu_state_t to provide additional
  * context specific to zvol_freebsd_strategy(), namely, the bio and the done
@@ -411,9 +420,8 @@ zvol_strategy_dmu_done(dmu_ctx_t *dc)
 }
 
 static void
-zvol_strategy(void *arg)
+zvol_strategy(zv_request_t *zr)
 {
-	zv_request_t *zr = arg;
 	zvol_strategy_state_t *zss;
 	zvol_state_t *zv = zr->zv;
 	zfs_uio_t *uio;
@@ -435,7 +443,6 @@ zvol_strategy(void *arg)
 	if (BIO_BI_SIZE(bio) == 0) {
 		rw_exit(&zv->zv_suspend_lock);
 		BIO_END_IO(bio, 0);
-		kmem_free(zr,  sizeof (zv_request_t));
 		return;
 	}
 
@@ -581,8 +588,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 			} else {
 				task = zv_request_task_create(zvr);
 				taskq_dispatch_ent(zvol_taskq,
-				    zvol_strategy, zvr, 0, &zvr->ent);
-				    zvol_write_task, task, 0, &task->ent);
+				    zvol_strategy_task, task, 0, &zvr->ent);
 			}
 		}
 	} else {
@@ -604,8 +610,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 		} else {
 			task = zv_request_task_create(zvr);
 			taskq_dispatch_ent(zvol_taskq,
-			    zvol_strategy, zvr, 0, &zvr->ent);
-			    zvol_read_task, task, 0, &task->ent);
+			    zvol_strategy_task, task, 0, &zvr->ent);
 		}
 	}
 
