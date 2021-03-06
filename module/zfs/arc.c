@@ -4183,7 +4183,7 @@ arc_evict_state_impl(multilist_t *ml, int idx, arc_buf_hdr_t *marker,
 	else
 	{
 		if (list_head(&arc_evict_waiters) != NULL)
-			aprint("not enough free memory to wake evict-waiters yet...");
+			;//aprint("not enough free memory to wake evict-waiters yet...");
 	}
 	arc_set_need_free();
 	mutex_exit(&arc_evict_lock);
@@ -4528,7 +4528,7 @@ restart:
 				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
 				////aprint("waiting for prunes...");
-				taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, arc_prune_sync().  if this is dodgy then we should cond_resched() somewhere in the restart-loop
+				//taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, arc_prune_sync().  if this is dodgy then we should cond_resched() somewhere in the restart-loop
 				////aprint("done waiting for prune.");
 
 				// now we try a restart with type == ARC_BUFC_METADATA again
@@ -5093,7 +5093,7 @@ arc_evict_cb(void *arg, zthr_t *zthr)
 		 */
 		arc_evict_waiter_t *aw;
 		if (list_head(&arc_evict_waiters) != NULL)
-			aprint("waking every evict-waiter");
+			;//aprint("waking every evict-waiter");
 		while ((aw = list_remove_head(&arc_evict_waiters)) != NULL) {
 			cv_broadcast(&aw->aew_cv);
 		}
