@@ -56,31 +56,11 @@ struct zvol_state_os {
 taskq_t *zvol_taskq;
 static struct ida zvol_ida;
 
-typedef struct zv_request_stack {
+typedef struct zv_request {
 	zvol_state_t	*zv;
 	struct bio	*bio;
-} zv_request_t;
-
-typedef struct zv_request_task {
-	zv_request_t zvr;
 	taskq_ent_t	ent;
-} zv_request_task_t;
-
-static zv_request_task_t *
-zv_request_task_create(zv_request_t zvr)
-{
-	zv_request_task_t *task;
-	task = kmem_alloc(sizeof (zv_request_task_t), KM_SLEEP);
-	taskq_init_ent(&task->ent);
-	task->zvr = zvr;
-	return (task);
-}
-
-static void
-zv_request_task_free(zv_request_task_t *task)
-{
-	kmem_free(task, sizeof (*task));
-}
+} zv_request_t;
 
 /*
  * Given a path, return TRUE if path is a ZVOL.
@@ -100,8 +80,9 @@ zvol_is_zvol_impl(const char *path)
 }
 
 static void
-zvol_write(zv_request_t *zvr)
+zvol_write(void *arg)
 {
+	zv_request_t *zvr = arg;
 	struct bio *bio = zvr->bio;
 	int error = 0;
 	zfs_uio_t uio;
@@ -121,6 +102,7 @@ zvol_write(zv_request_t *zvr)
 	if (uio.uio_resid == 0) {
 		rw_exit(&zv->zv_suspend_lock);
 		BIO_END_IO(bio, 0);
+		kmem_free(zvr, sizeof (zv_request_t));
 		return;
 	}
 
@@ -180,19 +162,13 @@ zvol_write(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 
 	BIO_END_IO(bio, -error);
+	kmem_free(zvr, sizeof (zv_request_t));
 }
 
 static void
-zvol_write_task(void *arg)
+zvol_discard(void *arg)
 {
-	zv_request_task_t *task = arg;
-	zvol_write(&task->zvr);
-	zv_request_task_free(task);
-}
-
-static void
-zvol_discard(zv_request_t *zvr)
-{
+	zv_request_t *zvr = arg;
 	struct bio *bio = zvr->bio;
 	zvol_state_t *zv = zvr->zv;
 	uint64_t start = BIO_BI_SECTOR(bio) << 9;
@@ -262,19 +238,13 @@ unlock:
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 
 	BIO_END_IO(bio, -error);
+	kmem_free(zvr, sizeof (zv_request_t));
 }
 
 static void
-zvol_discard_task(void *arg)
+zvol_read(void *arg)
 {
-	zv_request_task_t *task = arg;
-	zvol_discard(&task->zvr);
-	zv_request_task_free(task);
-}
-
-static void
-zvol_read(zv_request_t *zvr)
-{
+	zv_request_t *zvr = arg;
 	struct bio *bio = zvr->bio;
 	int error = 0;
 	zfs_uio_t uio;
@@ -325,14 +295,7 @@ zvol_read(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, READ, bio, start_time);
 
 	BIO_END_IO(bio, -error);
-}
-
-static void
-zvol_read_task(void *arg)
-{
-	zv_request_task_t *task = arg;
-	zvol_read(&task->zvr);
-	zv_request_task_free(task);
+	kmem_free(zvr, sizeof (zv_request_t));
 }
 
 #ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
@@ -355,6 +318,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 	uint64_t offset = BIO_BI_SECTOR(bio) << 9;
 	uint64_t size = BIO_BI_SIZE(bio);
 	int rw = bio_data_dir(bio);
+	zv_request_t *zvr;
 
 	if (bio_has_data(bio) && offset + size > zv->zv_volsize) {
 		printk(KERN_INFO
@@ -366,12 +330,6 @@ zvol_request(struct request_queue *q, struct bio *bio)
 		BIO_END_IO(bio, -SET_ERROR(EIO));
 		goto out;
 	}
-
-	zv_request_t zvr = {
-		.zv = zv,
-		.bio = bio,
-	};
-	zv_request_task_t *task;
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
@@ -402,6 +360,11 @@ zvol_request(struct request_queue *q, struct bio *bio)
 			}
 			rw_downgrade(&zv->zv_suspend_lock);
 		}
+
+		zvr = kmem_alloc(sizeof (zv_request_t), KM_SLEEP);
+		zvr->zv = zv;
+		zvr->bio = bio;
+		taskq_init_ent(&zvr->ent);
 
 		/*
 		 * We don't want this thread to be blocked waiting for i/o to
@@ -435,19 +398,17 @@ zvol_request(struct request_queue *q, struct bio *bio)
 		 */
 		if (bio_is_discard(bio) || bio_is_secure_erase(bio)) {
 			if (zvol_request_sync) {
-				zvol_discard(&zvr);
+				zvol_discard(zvr);
 			} else {
-				task = zv_request_task_create(zvr);
 				taskq_dispatch_ent(zvol_taskq,
-				    zvol_discard_task, task, 0, &task->ent);
+				    zvol_discard, zvr, 0, &zvr->ent);
 			}
 		} else {
 			if (zvol_request_sync) {
-				zvol_write(&zvr);
+				zvol_write(zvr);
 			} else {
-				task = zv_request_task_create(zvr);
 				taskq_dispatch_ent(zvol_taskq,
-				    zvol_write_task, task, 0, &task->ent);
+				    zvol_write, zvr, 0, &zvr->ent);
 			}
 		}
 	} else {
@@ -461,15 +422,19 @@ zvol_request(struct request_queue *q, struct bio *bio)
 			goto out;
 		}
 
+		zvr = kmem_alloc(sizeof (zv_request_t), KM_SLEEP);
+		zvr->zv = zv;
+		zvr->bio = bio;
+		taskq_init_ent(&zvr->ent);
+
 		rw_enter(&zv->zv_suspend_lock, RW_READER);
 
 		/* See comment in WRITE case above. */
 		if (zvol_request_sync) {
-			zvol_read(&zvr);
+			zvol_read(zvr);
 		} else {
-			task = zv_request_task_create(zvr);
 			taskq_dispatch_ent(zvol_taskq,
-			    zvol_read_task, task, 0, &task->ent);
+			    zvol_read, zvr, 0, &zvr->ent);
 		}
 	}
 
