@@ -321,6 +321,11 @@ extern	int printk(const char *fmt, ...);
 #define XASSERT3U XASSERT3
 // ^ bleh, fixme
 
+typedef struct {
+	uint64_t hashval;
+} tiny_l2arcfilter_t;
+#define TINY_L2ONLY_SIZE sizeof(tiny_l2arcfilter_t)
+
 /* set with ZFS_DEBUG=watch, to enable watchpoints on frozen buffers */
 boolean_t arc_watch = B_FALSE;
 
@@ -1132,6 +1137,7 @@ buf_hash_remove(arc_buf_hdr_t *hdr)
 static kmem_cache_t *hdr_full_cache;
 static kmem_cache_t *hdr_full_crypt_cache;
 static kmem_cache_t *hdr_l2only_cache;
+static kmem_cache_t *tiny_l2only_cache;
 static kmem_cache_t *buf_cache;
 
 static void
@@ -1155,6 +1161,7 @@ buf_fini(void)
 	kmem_cache_destroy(hdr_full_cache);
 	kmem_cache_destroy(hdr_full_crypt_cache);
 	kmem_cache_destroy(hdr_l2only_cache);
+	kmem_cache_destroy(tiny_l2only_cache);
 	kmem_cache_destroy(buf_cache);
 }
 
@@ -1190,6 +1197,18 @@ hdr_full_crypt_cons(void *vbuf, void *unused, int kmflag)
 	hdr_full_cons(vbuf, unused, kmflag);
 	bzero(&hdr->b_crypt_hdr, sizeof (hdr->b_crypt_hdr));
 	arc_space_consume(sizeof (hdr->b_crypt_hdr), ARC_SPACE_HDRS);
+
+	return (0);
+}
+
+/* ARGSUSED */
+static int
+tiny_l2only_cons(void *vbuf, void *unused, int kmflag)
+{
+	arc_buf_hdr_t *hdr = vbuf;
+
+	bzero(hdr, TINY_L2ONLY_SIZE);
+	arc_space_consume(HDR_L2ONLY_SIZE, ARC_SPACE_L2TINY);
 
 	return (0);
 }
@@ -1259,6 +1278,16 @@ hdr_l2only_dest(void *vbuf, void *unused)
 
 /* ARGSUSED */
 static void
+tiny_l2only_dest(void *vbuf, void *unused)
+{
+	arc_buf_hdr_t *hdr __maybe_unused = vbuf;
+
+	ASSERT(HDR_EMPTY(hdr));
+	arc_space_return(TINY_L2ONLY_SIZE, ARC_SPACE_L2TINY);
+}
+
+/* ARGSUSED */
+static void
 buf_dest(void *vbuf, void *unused)
 {
 	arc_buf_t *buf = vbuf;
@@ -1308,6 +1337,9 @@ retry:
 	    NULL, NULL, NULL, 0);
 	hdr_l2only_cache = kmem_cache_create("arc_buf_hdr_t_l2only",
 	    HDR_L2ONLY_SIZE, 0, hdr_l2only_cons, hdr_l2only_dest, NULL,
+	    NULL, NULL, 0);
+	tiny_l2only_cache = kmem_cache_create("arc_buf_hdr_t_l2only",
+	    TINY_L2ONLY_SIZE, 0, tiny_l2only_cons, tiny_l2only_dest, NULL,
 	    NULL, NULL, 0);
 	buf_cache = kmem_cache_create("arc_buf_t", sizeof (arc_buf_t),
 	    0, buf_cons, buf_dest, NULL, NULL, NULL, 0);
@@ -1726,6 +1758,20 @@ arc_buf_try_copy_decompressed_data(arc_buf_t *buf)
  * which circumvent the regular disk->arc->l2arc path and instead come
  * into being in the reverse order, i.e. l2arc->arc.
  */
+static tiny_l2arcfilter_t *
+arc_buf_alloc_l2tiny(size_t size, arc_buf_contents_t type, l2arc_dev_t *dev,
+					 dva_t dva, uint64_t daddr, int32_t psize, uint64_t birth,
+					 enum zio_compress compress, uint8_t complevel, boolean_t protected,
+					 boolean_t prefetch, arc_state_type_t arcs_state)
+{
+	tiny_l2arcfilter_t *tinyl2;
+
+	ASSERT(size != 0);
+	tinyl2 = kmem_cache_alloc(tiny_l2only_cache, KM_SLEEP);
+	// shockingly bad hash, for now
+	tinyl2->hashval = size + type;
+	return (tinyl2);
+}
 static arc_buf_hdr_t *
 arc_buf_alloc_l2only(size_t size, arc_buf_contents_t type, l2arc_dev_t *dev,
     dva_t dva, uint64_t daddr, int32_t psize, uint64_t birth,
@@ -4499,7 +4545,7 @@ restart:
 				&& prune_tries <= MAX_PRUNE_TRIES
 				&& zfs_arc_meta_prune > 0) {
 				prune += zfs_arc_meta_prune;
-				if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);
+				/*if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);*/
 				++prune_tries;
 				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
@@ -4534,8 +4580,8 @@ restart:
 			}
 			else
 			{
-				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
-				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
+				/*if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
+				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);*/
 			}
 		}
 	}
@@ -4989,6 +5035,7 @@ arc_kmem_reap_soon(void)
 	}
 	kmem_cache_reap_now(buf_cache);
 	kmem_cache_reap_now(hdr_full_cache);
+	kmem_cache_reap_now(tiny_l2only_cache);
 	kmem_cache_reap_now(hdr_l2only_cache);
 	kmem_cache_reap_now(zfs_btree_leaf_cache);
 	abd_cache_reap_now();
@@ -10340,7 +10387,7 @@ l2arc_log_blk_restore(l2arc_dev_t *dev, const l2arc_log_blk_phys_t *lb,
 		size += L2BLK_GET_LSIZE((&lb->lb_entries[i])->le_prop);
 		asize += vdev_psize_to_asize(dev->l2ad_vdev,
 		    L2BLK_GET_PSIZE((&lb->lb_entries[i])->le_prop));
-		l2arc_hdr_restore(&lb->lb_entries[i], dev);
+		l2arc_hdr_restore_later(&lb->lb_entries[i], dev);
 	}
 
 	/*
@@ -10360,6 +10407,72 @@ l2arc_log_blk_restore(l2arc_dev_t *dev, const l2arc_log_blk_phys_t *lb,
  * Restores a single ARC buf hdr from a log entry. The ARC buffer is put
  * into a state indicating that it has been evicted to L2ARC.
  */
+const int bloomentries=800000;
+static uchar_t bloom[bloomentries];
+static void
+l2arc_hdr_restore_later(const l2arc_log_ent_phys_t *le, l2arc_dev_t *dev)
+{
+	arc_buf_hdr_t		*hdr, *exists;
+	kmutex_t		*hash_lock;
+	arc_buf_contents_t	type = L2BLK_GET_TYPE((le)->le_prop);
+	uint64_t		asize;
+
+	/*
+	 * Do all the allocation before grabbing any locks, this lets us
+	 * sleep if memory is full and we don't have to deal with failed
+	 * allocations.
+	 */
+	hdr = arc_buf_alloc_l2only(L2BLK_GET_LSIZE((le)->le_prop), type,
+	    dev, le->le_dva, le->le_daddr,
+	    L2BLK_GET_PSIZE((le)->le_prop), le->le_birth,
+	    L2BLK_GET_COMPRESS((le)->le_prop), le->le_complevel,
+	    L2BLK_GET_PROTECTED((le)->le_prop),
+	    L2BLK_GET_PREFETCH((le)->le_prop),
+	    L2BLK_GET_STATE((le)->le_prop));
+	asize = vdev_psize_to_asize(dev->l2ad_vdev,
+	    L2BLK_GET_PSIZE((le)->le_prop));
+
+	/*
+	 * vdev_space_update() has to be called before arc_hdr_destroy() to
+	 * avoid underflow since the latter also calls vdev_space_update().
+	 */
+	l2arc_hdr_arcstats_increment(hdr);
+	vdev_space_update(dev->l2ad_vdev, asize, 0, 0);
+
+	mutex_enter(&dev->l2ad_mtx);
+	list_insert_tail(&dev->l2ad_buflist, hdr);
+	(void) zfs_refcount_add_many(&dev->l2ad_alloc, arc_hdr_size(hdr), hdr);
+	mutex_exit(&dev->l2ad_mtx);
+
+	exists = buf_hash_insert(hdr, &hash_lock);
+	if (exists) {
+		/* Buffer was already cached, no need to restore it. */
+		arc_hdr_destroy(hdr);
+		/*
+		 * If the buffer is already cached, check whether it has
+		 * L2ARC metadata. If not, enter them and update the flag.
+		 * This is important is case of onlining a cache device, since
+		 * we previously evicted all L2ARC metadata from ARC.
+		 */
+		if (!HDR_HAS_L2HDR(exists)) {
+			arc_hdr_set_flags(exists, ARC_FLAG_HAS_L2HDR);
+			exists->b_l2hdr.b_dev = dev;
+			exists->b_l2hdr.b_daddr = le->le_daddr;
+			exists->b_l2hdr.b_arcs_state =
+			    L2BLK_GET_STATE((le)->le_prop);
+			mutex_enter(&dev->l2ad_mtx);
+			list_insert_tail(&dev->l2ad_buflist, exists);
+			(void) zfs_refcount_add_many(&dev->l2ad_alloc,
+			    arc_hdr_size(exists), exists);
+			mutex_exit(&dev->l2ad_mtx);
+			l2arc_hdr_arcstats_increment(exists);
+			vdev_space_update(dev->l2ad_vdev, asize, 0, 0);
+		}
+		ARCSTAT_BUMP(arcstat_l2_rebuild_bufs_precached);
+	}
+
+	mutex_exit(hash_lock);
+}
 static void
 l2arc_hdr_restore(const l2arc_log_ent_phys_t *le, l2arc_dev_t *dev)
 {

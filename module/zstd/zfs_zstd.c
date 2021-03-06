@@ -561,7 +561,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	size_t src_remain = s_len;
 	char* src_ptr = s_start;
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
-	ZSTD_inBuffer inBuff;
+	//ZSTD_inBuffer inBuff;
 	{
 
 		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
@@ -578,7 +578,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
 			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
 			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
-			inBuff = thisInBuff;
+			//inBuff = thisInBuff;
 			if (ZSTD_isError(status))
 			{
 				compressedSize = status;

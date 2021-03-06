@@ -202,11 +202,13 @@ typedef enum arc_buf_contents {
 /*
  * The following breakdowns of arc_size exist for kstat only.
  */
-typedef enum arc_space_type {
+typedef enum arc_space_type
+{
 	ARC_SPACE_DATA,
 	ARC_SPACE_META,
 	ARC_SPACE_HDRS,
 	ARC_SPACE_L2HDRS,
+	ARC_SPACE_L2TINY,
 	ARC_SPACE_DBUF,
 	ARC_SPACE_DNODE,
 	ARC_SPACE_BONUS,
