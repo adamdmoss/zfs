@@ -62,6 +62,16 @@
 #include <linux/vfs_compat.h>
 #include "zfs_comutil.h"
 
+extern	int printk(const char *fmt, ...);
+#ifdef __KERNEL__
+#define aprint printk
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3U XASSERT
+// ^ bleh, fixme
+
 enum {
 	TOKEN_RO,
 	TOKEN_RW,
@@ -1193,6 +1203,19 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int objects = 0;
 	int i = 0, j = 0;
 
+	static int recursion = 0;
+	{
+		XASSERT3(recursion, ==, 0);
+
+		static int done = 0;
+		if (!done)
+		{
+			done = 1;
+			aprint("ADAM: HUZZAH, we're using zfs_prune_aliases");
+		}
+	}
+	recursion++;
+
 	zp_array = kmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
@@ -1205,12 +1228,24 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		list_remove(&zfsvfs->z_all_znodes, zp);
 		list_insert_tail(&zfsvfs->z_all_znodes, zp);
 
-		/* Skip active znodes and .zfs entries */
-		if (MUTEX_HELD(&zp->z_lock) || zp->z_is_ctldir)
+		/* Skip .zfs entries */
+		if (zp->z_is_ctldir)
 			continue;
 
-		if (igrab(ZTOI(zp)) == NULL)
+		/* Skip active znodes (why...?) */
+		if (!mutex_tryenter(&zp->z_lock))
+		{
+			//aprint("prune: skipping znode with modlock");
 			continue;
+		}
+
+		/* Add a ref while it's in our array */
+		if (unlikely(igrab(ZTOI(zp)) == NULL))
+		{
+			mutex_exit(&zp->z_lock);
+			aprint("prune: skipping znode already being freed");
+			continue;
+		}
 
 		zp_array[j] = zp;
 		j++;
@@ -1223,14 +1258,17 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		ASSERT3P(zp, !=, NULL);
 		d_prune_aliases(ZTOI(zp));
 
+		/* check if we're the last reference now, which will mean zrele() will free this */
 		if (atomic_read(&ZTOI(zp)->i_count) == 1)
 			objects++;
-
+ 
+		mutex_exit(&zp->z_lock);
 		zrele(zp);
 	}
 
 	kmem_free(zp_array, max_array * sizeof (znode_t *));
 
+	recursion--;
 	return (objects);
 }
 

@@ -311,10 +311,18 @@
 #include <sys/zfs_racct.h>
 #include <sys/zstd/zstd.h>
 
-#ifndef _KERNEL
+extern	int printk(const char *fmt, ...);
+#ifdef __KERNEL__
+#define aprint printk
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3U XASSERT3
+// ^ bleh, fixme
+
 /* set with ZFS_DEBUG=watch, to enable watchpoints on frozen buffers */
 boolean_t arc_watch = B_FALSE;
-#endif
 
 /*
  * This thread's job is to keep enough free memory in the system, by
@@ -444,12 +452,12 @@ int zfs_compressed_arc_enabled = B_TRUE;
  * ARC will evict meta buffers that exceed arc_meta_limit. This
  * tunable make arc_meta_limit adjustable for different workloads.
  */
-unsigned long zfs_arc_meta_limit_percent = 75;
+unsigned long zfs_arc_meta_limit_percent = 100;
 
 /*
  * Percentage that can be consumed by dnodes of ARC meta buffers.
  */
-unsigned long zfs_arc_dnode_limit_percent = 10;
+unsigned long zfs_arc_dnode_limit_percent = 100;
 
 /*
  * These tunables are Linux specific
@@ -892,7 +900,6 @@ static void arc_free_data_impl(arc_buf_hdr_t *hdr, uint64_t size, void *tag);
 static void arc_hdr_free_abd(arc_buf_hdr_t *, boolean_t);
 static void arc_hdr_alloc_abd(arc_buf_hdr_t *, int);
 static void arc_access(arc_buf_hdr_t *, kmutex_t *);
-static void arc_buf_watch(arc_buf_t *);
 
 static arc_buf_contents_t arc_buf_type(arc_buf_hdr_t *);
 static uint32_t arc_bufc_to_flags(arc_buf_contents_t);
@@ -1554,29 +1561,6 @@ arc_buf_sigsegv(int sig, siginfo_t *si, void *unused)
 	panic("Got SIGSEGV at address: 0x%lx\n", (long)si->si_addr);
 }
 #endif
-
-/* ARGSUSED */
-static void
-arc_buf_unwatch(arc_buf_t *buf)
-{
-#ifndef _KERNEL
-	if (arc_watch) {
-		ASSERT0(mprotect(buf->b_data, arc_buf_size(buf),
-		    PROT_READ | PROT_WRITE));
-	}
-#endif
-}
-
-/* ARGSUSED */
-static void
-arc_buf_watch(arc_buf_t *buf)
-{
-#ifndef _KERNEL
-	if (arc_watch)
-		ASSERT0(mprotect(buf->b_data, arc_buf_size(buf),
-		    PROT_READ));
-#endif
-}
 
 static arc_buf_contents_t
 arc_buf_type(arc_buf_hdr_t *hdr)
@@ -4172,6 +4156,11 @@ arc_evict_state_impl(multilist_t *ml, int idx, arc_buf_hdr_t *marker,
 			cv_broadcast(&aw->aew_cv);
 		}
 	}
+	else
+	{
+		if (list_head(&arc_evict_waiters) != NULL)
+			;//aprint("not enough free memory to wake evict-waiters yet...");
+	}
 	arc_set_need_free();
 	mutex_exit(&arc_evict_lock);
 
@@ -4251,7 +4240,7 @@ arc_evict_state(arc_state_t *state, uint64_t spa, int64_t bytes,
 		 * Request that 10% of the LRUs be scanned by the superblock
 		 * shrinker.
 		 */
-		if (type == ARC_BUFC_DATA && aggsum_compare(&astat_dnode_size,
+		if (aggsum_compare(&astat_dnode_size,
 		    arc_dnode_size_limit) > 0) {
 			arc_prune_async((aggsum_upper_bound(&astat_dnode_size) -
 			    arc_dnode_size_limit) / sizeof (dnode_t) /
@@ -4397,12 +4386,39 @@ arc_evict_impl(arc_state_t *state, uint64_t spa, int64_t bytes,
 static uint64_t
 arc_evict_meta_balanced(uint64_t meta_used)
 {
-	int64_t delta, prune = 0, adjustmnt;
+	const int MAX_PRUNE_TRIES = 8;
+	boolean_t making_progress;
+	int64_t adjustment_remaining;
+	/*static*/ int64_t prune = 0; // persists across calls until we get what we want!  experimental - will this become too aggressive?  static probably naughty too, but the worst that happens after re-init is we start off very aggressive...?
 	uint64_t total_evicted = 0;
-	arc_buf_contents_t type = ARC_BUFC_DATA;
-	int restarts = MAX(zfs_arc_meta_adjust_restarts, 0);
+	int prune_tries = 0;
+	arc_buf_contents_t type = ARC_BUFC_METADATA;
+	int restarts_remaining = zfs_arc_meta_adjust_restarts;
+	int restarts_done = 0;
+
+	static int recursion = 0;
+	XASSERT3(recursion, ==, 0);
+	recursion++;
+
+	uint64_t meta_target = arc_meta_limit;
+
+	// at least limit the target metadata size to the whole arc target size too!
+	meta_target = MIN(meta_target, arc_c);
+
+	// todo: figure out some sort of dynamic target?
+	//meta_target = 
+
+	/*
+	 * Although the goal is to evict metadata, we MAY also end up
+	 * evicting data in the process; we count that as progress
+	 * towards our target anyway in the interests of a balanced
+	 * arc, so we don't end up kicking out a lot of data just
+	 * to free up a little bit of metadata.
+	 */
+	adjustment_remaining = meta_used - meta_target;
 
 restart:
+	making_progress = B_FALSE;
 	/*
 	 * This slightly differs than the way we evict from the mru in
 	 * arc_evict because we don't have a "target" value (i.e. no
@@ -4411,18 +4427,20 @@ restart:
 	 * metadata from the MFU. I think we probably need to implement a
 	 * "metadata arc_p" value to do this properly.
 	 */
-	adjustmnt = meta_used - arc_meta_limit;
+	//adjustmnt = meta_used - arc_meta_limit;
 
-	if (adjustmnt > 0 &&
+	if (adjustment_remaining > 0 &&
 	    zfs_refcount_count(&arc_mru->arcs_esize[type]) > 0) {
-		delta = MIN(zfs_refcount_count(&arc_mru->arcs_esize[type]),
-		    adjustmnt);
-		total_evicted += arc_evict_impl(arc_mru, 0, delta, type);
-		adjustmnt -= delta;
+		int64_t delta = MIN(zfs_refcount_count(&arc_mru->arcs_esize[type]),
+		    adjustment_remaining);
+		uint64_t evicted = arc_evict_impl(arc_mru, 0, delta, type);
+		total_evicted += evicted;
+		adjustment_remaining -= evicted;
+		if (evicted) making_progress = B_TRUE;
 	}
 
 	/*
-	 * We can't afford to recalculate adjustmnt here. If we do,
+	 * We can't afford to recalculate adjustment here. If we do,
 	 * new metadata buffers can sneak into the MRU or ANON lists,
 	 * thus penalize the MFU metadata. Although the fudge factor is
 	 * small, it has been empirically shown to be significant for
@@ -4431,28 +4449,36 @@ restart:
 	 * simply decrement the amount of data evicted from the MRU.
 	 */
 
-	if (adjustmnt > 0 &&
+	if (adjustment_remaining > 0 &&
 	    zfs_refcount_count(&arc_mfu->arcs_esize[type]) > 0) {
-		delta = MIN(zfs_refcount_count(&arc_mfu->arcs_esize[type]),
-		    adjustmnt);
-		total_evicted += arc_evict_impl(arc_mfu, 0, delta, type);
+		int64_t delta = MIN(zfs_refcount_count(&arc_mfu->arcs_esize[type]),
+		    adjustment_remaining);
+		uint64_t evicted = arc_evict_impl(arc_mfu, 0, delta, type);
+		total_evicted += evicted;
+		adjustment_remaining -= evicted;
+		if (evicted) making_progress = B_TRUE;
 	}
 
-	adjustmnt = meta_used - arc_meta_limit;
+	//adjustmnt = meta_used - arc_meta_limit;
 
-	if (adjustmnt > 0 &&
+	if (adjustment_remaining > 0 &&
 	    zfs_refcount_count(&arc_mru_ghost->arcs_esize[type]) > 0) {
-		delta = MIN(adjustmnt,
+		int64_t delta = MIN(adjustment_remaining,
 		    zfs_refcount_count(&arc_mru_ghost->arcs_esize[type]));
-		total_evicted += arc_evict_impl(arc_mru_ghost, 0, delta, type);
-		adjustmnt -= delta;
+		uint64_t evicted = arc_evict_impl(arc_mru_ghost, 0, delta, type);
+		total_evicted += evicted;
+		adjustment_remaining -= evicted;
+		if (evicted) making_progress = B_TRUE;
 	}
 
-	if (adjustmnt > 0 &&
+	if (adjustment_remaining > 0 &&
 	    zfs_refcount_count(&arc_mfu_ghost->arcs_esize[type]) > 0) {
-		delta = MIN(adjustmnt,
+		int64_t delta = MIN(adjustment_remaining,
 		    zfs_refcount_count(&arc_mfu_ghost->arcs_esize[type]));
-		total_evicted += arc_evict_impl(arc_mfu_ghost, 0, delta, type);
+		uint64_t evicted = arc_evict_impl(arc_mfu_ghost, 0, delta, type);
+		total_evicted += evicted;
+		adjustment_remaining -= evicted;
+		if (evicted) making_progress = B_TRUE;
 	}
 
 	/*
@@ -4462,23 +4488,63 @@ restart:
 	 * meta buffers.  Requests to the upper layers will be made with
 	 * increasingly large scan sizes until the ARC is below the limit.
 	 */
-	if (meta_used > arc_meta_limit) {
+	if (adjustment_remaining > 0) {
 		if (type == ARC_BUFC_DATA) {
+			// if we're just freed some data and we're still over budget, then potentially try again with metadata since freeing up data can make more metadata freeable
 			type = ARC_BUFC_METADATA;
 		} else {
-			type = ARC_BUFC_DATA;
 
-			if (zfs_arc_meta_prune) {
+			// IFF we tried and failed to find some freeable metadata, then prune from the upper layers to potentially allow more metadata to be freeable
+			if (!making_progress
+				&& prune_tries <= MAX_PRUNE_TRIES
+				&& zfs_arc_meta_prune > 0) {
 				prune += zfs_arc_meta_prune;
+				if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);
+				++prune_tries;
+				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
+				////aprint("waiting for prunes...");
+				//taskq_wait_outstanding(arc_prune_taskq, 0); // if this works, it should be, like, arc_prune_sync().  if this is dodgy then we should cond_resched() somewhere in the restart-loop
+				////aprint("done waiting for prune.");
+
+				// now we try a restart with type == ARC_BUFC_METADATA again
+			}
+			else
+			{
+				// if we are totally out of options for freeing metadata then restart while trying to free data, which may in turn free-up more metadata for later
+				type = ARC_BUFC_DATA;
+			}
+
+			making_progress = B_TRUE; // /ᐠ｡ꞈ｡ᐟ\ _(LYING); we MIGHT make progress now, so ensure at least one more restart to find out
+		}
+
+		/*
+		 * >= 2 restarts ensures we at least try evicting metadata
+		 * first, then restart with data if that wasn't enough (to
+		 * unhold more metadata), then restart to try at newly-unheld
+		 * metadata.
+		 */
+		if (restarts_remaining > 0 || restarts_done < 2) {
+			if (making_progress)
+			{
+				restarts_remaining--;
+				restarts_done++;
+				//cond_resched(); // maybe not necessary, trying
+				goto restart;
+			}
+			else
+			{
+				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
+				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
 			}
 		}
-
-		if (restarts > 0) {
-			restarts--;
-			goto restart;
-		}
 	}
+	else
+	{
+		// totally cleared enough!
+		prune = 0; // reset prune aggressiveness
+	}
+	recursion--;
 	return (total_evicted);
 }
 
@@ -4523,9 +4589,23 @@ static uint64_t
 arc_evict_meta(uint64_t meta_used)
 {
 	if (zfs_arc_meta_strategy == ARC_STRATEGY_META_ONLY)
+	{
+		static int did_once = 0;
+		if (!did_once) {
+			did_once = 1;
+			aprint("arc_evict_meta: zfs_arc_meta_strategy == ARC_STRATEGY_META_ONLY.  Weak.");
+		}
 		return (arc_evict_meta_only(meta_used));
+	}
 	else
+	{
+		static int did_once = 0;
+		if (!did_once) {
+			did_once = 1;
+			aprint("arc_evict_meta: zfs_arc_meta_strategy != ARC_STRATEGY_META_ONLY.  HUZZAH!");
+		}
 		return (arc_evict_meta_balanced(meta_used));
+	}
 }
 
 /*
@@ -4612,7 +4692,6 @@ arc_evict(void)
 	uint64_t total_evicted = 0;
 	uint64_t bytes;
 	int64_t target;
-	uint64_t asize = aggsum_value(&arc_size);
 	uint64_t ameta = aggsum_value(&arc_meta_used);
 
 	/*
@@ -4620,6 +4699,14 @@ arc_evict(void)
 	 * potentially evicting data buffers below.
 	 */
 	total_evicted += arc_evict_meta(ameta);
+
+	// (re)count metadata+data after arc_evict_meta()
+	if (total_evicted > 0)
+	{
+		ameta = aggsum_value(&arc_meta_used);
+	}
+
+	uint64_t asize = aggsum_value(&arc_size);
 
 	/*
 	 * Adjust MRU size
@@ -4634,8 +4721,11 @@ arc_evict(void)
 	target = MIN((int64_t)(asize - arc_c),
 	    (int64_t)(zfs_refcount_count(&arc_anon->arcs_size) +
 	    zfs_refcount_count(&arc_mru->arcs_size) + ameta - arc_p));
+	XASSERT3(target, >=, 0);
 
-	/*
+	if (target > 0)
+	{
+		/*
 	 * If we're below arc_meta_min, always prefer to evict data.
 	 * Otherwise, try to satisfy the requested number of bytes to
 	 * evict from the type which contains older buffers; in an
@@ -4643,31 +4733,37 @@ arc_evict(void)
 	 * type. If we cannot satisfy the number of bytes from this
 	 * type, spill over into the next type.
 	 */
-	if (arc_evict_type(arc_mru) == ARC_BUFC_METADATA &&
-	    ameta > arc_meta_min) {
-		bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
-		total_evicted += bytes;
+		if (arc_evict_type(arc_mru) == ARC_BUFC_METADATA &&
+			ameta > arc_meta_min)
+		{
+			bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * metadata, we try to get the rest from data.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		total_evicted +=
-		    arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
-	} else {
-		bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
-		total_evicted += bytes;
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
+		}
+		else
+		{
+			bytes = arc_evict_impl(arc_mru, 0, target, ARC_BUFC_DATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * data, we try to get the rest from metadata.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		total_evicted +=
-		    arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mru, 0, target, ARC_BUFC_METADATA);
+		}
 	}
 
 	/*
@@ -4685,32 +4781,41 @@ arc_evict(void)
 	 * size, we evict the rest from the MFU.
 	 */
 	target = asize - arc_c;
+	XASSERT3(target, >=, 0);
 
-	if (arc_evict_type(arc_mfu) == ARC_BUFC_METADATA &&
-	    ameta > arc_meta_min) {
-		bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
-		total_evicted += bytes;
+	if (target > 0)
+	{
+		if (arc_evict_type(arc_mfu) == ARC_BUFC_METADATA &&
+			ameta > arc_meta_min)
+		{
+			bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
 		 * metadata, we try to get the rest from data.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		total_evicted +=
-		    arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
-	} else {
-		bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
-		total_evicted += bytes;
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
+		}
+		else
+		{
+			bytes = arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_DATA);
+			total_evicted += bytes;
 
-		/*
+			/*
 		 * If we couldn't evict our target number of bytes from
-		 * data, we try to get the rest from data.
+		 * data, we try to get the rest from metadata.
 		 */
-		target -= bytes;
+			target -= bytes;
 
-		total_evicted +=
-		    arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+			if (target > 0)
+				total_evicted +=
+					arc_evict_impl(arc_mfu, 0, target, ARC_BUFC_METADATA);
+		}
 	}
 
 	/*
@@ -4726,14 +4831,19 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru->arcs_size) +
 	    zfs_refcount_count(&arc_mru_ghost->arcs_size) - arc_c;
+	XASSERT3U(target, >=, 0);
 
-	bytes = arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_DATA);
-	total_evicted += bytes;
+	if (target > 0)
+	{
+		bytes = arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_DATA);
+		total_evicted += bytes;
 
-	target -= bytes;
+		target -= bytes;
 
-	total_evicted +=
-	    arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_METADATA);
+		if (target > 0)
+			total_evicted +=
+				arc_evict_impl(arc_mru_ghost, 0, target, ARC_BUFC_METADATA);
+	}
 
 	/*
 	 * We assume the sum of the mru list and mfu list is less than
@@ -4745,14 +4855,19 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru_ghost->arcs_size) +
 	    zfs_refcount_count(&arc_mfu_ghost->arcs_size) - arc_c;
+	XASSERT3U(target, >=, 0);
 
-	bytes = arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_DATA);
-	total_evicted += bytes;
+	if (target > 0)
+	{
+		bytes = arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_DATA);
+		total_evicted += bytes;
 
-	target -= bytes;
+		target -= bytes;
 
-	total_evicted +=
-	    arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_METADATA);
+		if (target > 0)
+			total_evicted +=
+				arc_evict_impl(arc_mfu_ghost, 0, target, ARC_BUFC_METADATA);
+	}
 
 	return (total_evicted);
 }
@@ -4953,6 +5068,8 @@ arc_evict_cb(void *arg, zthr_t *zthr)
 		 * arc_get_data_impl() sooner.
 		 */
 		arc_evict_waiter_t *aw;
+		if (list_head(&arc_evict_waiters) != NULL)
+			;//aprint("waking every evict-waiter");
 		while ((aw = list_remove_head(&arc_evict_waiters)) != NULL) {
 			cv_broadcast(&aw->aew_cv);
 		}
@@ -7072,8 +7189,8 @@ arc_write(zio_t *pio, spa_t *spa, uint64_t txg,
 	ASSERT(!HDR_IO_IN_PROGRESS(hdr));
 	ASSERT3P(hdr->b_l1hdr.b_acb, ==, NULL);
 	ASSERT3U(hdr->b_l1hdr.b_bufcnt, >, 0);
-	if (l2arc)
-		arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
+	//if (l2arc)
+	//	arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
 
 	if (ARC_BUF_ENCRYPTED(buf)) {
 		ASSERT(ARC_BUF_COMPRESSED(buf));
@@ -7663,9 +7780,8 @@ arc_init(void)
 	    offsetof(arc_prune_t, p_node));
 	mutex_init(&arc_prune_mtx, NULL, MUTEX_DEFAULT, NULL);
 
-	arc_prune_taskq = taskq_create("arc_prune", 100, defclsyspri,
-	    boot_ncpus, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC |
-	    TASKQ_THREADS_CPU_PCT);
+	arc_prune_taskq = taskq_create("arc_prune", 1, defclsyspri,
+	    1, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC);
 
 	arc_ksp = kstat_create("zfs", 0, "arcstats", "misc", KSTAT_TYPE_NAMED,
 	    sizeof (arc_stats) / sizeof (kstat_named_t), KSTAT_FLAG_VIRTUAL);
@@ -9364,6 +9480,9 @@ l2arc_feed_thread(void *unused)
 		    &l2arc_feed_thr_lock, next);
 		CALLB_CPR_SAFE_END(&cpr, &l2arc_feed_thr_lock);
 		next = ddi_get_lbolt() + hz;
+
+		// ADAM: resched here...?
+		cond_resched();
 
 		/*
 		 * Quick check for L2ARC devices.

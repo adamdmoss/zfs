@@ -38,10 +38,11 @@
  * [1] Portions of this software were developed by Allan Jude
  *     under sponsorship from the FreeBSD Foundation.
  */
-
-#include <sys/param.h>
-#include <sys/sysmacros.h>
-#include <sys/zfs_context.h>
+//#define MODULE
+//#undef __KERNEL__
+//#include <sys/param.h>
+//#include <sys/sysmacros.h>
+///#include <sys/zfs_context.h>
 #include <sys/zio_compress.h>
 #include <sys/spa.h>
 #include <sys/zstd/zstd.h>
@@ -49,6 +50,37 @@
 #define	ZSTD_STATIC_LINKING_ONLY
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
+//#include <linux/printk.h>
+
+//#define __KERNEL__
+#include <sys/debug.h>
+#include <sys/sysmacros.h>
+
+
+extern	int printk(const char *fmt, ...);
+#ifdef __KERNEL__
+#define aprint printk
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3U XASSERT3
+// ^ bleh, fixme
+
+//#define __KERNEL__
+//#include <linux/kernel.h>
+//#include <linux/module.h>
+//#include <linux/fs.h>
+//#include <asm/uaccess.h> // for put_user //
+//#include <linux/ioport.h>
+
+////#include <linux/tracepoint.h>
+////#include "linux/kernel.h"
+//#include <linux/kernel.h>
+//#include <sys/klog.h>
+//#include <sys/zfs_debug.h>
+//#include <linux/module.h>
+//#include <linux/kernel.h>
 
 kstat_t *zstd_ksp = NULL;
 
@@ -342,6 +374,124 @@ zstd_mempool_free(struct zstd_kmem *z)
 	mutex_exit(&z->pool->barrier);
 }
 
+/////////////////////////////////////////// CCTX OBJECT POOLING ROUGH DRAFT
+/////////////////////////////////////////// VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV
+// this is more complicated and less generic than it should eventually be.
+static struct
+{
+	kmutex_t outerlock;
+	int count;
+	kmutex_t* listlocks;
+	void** list;
+} cctx_pool;
+
+static void* GrabCCtx(void)
+{
+	void* found = NULL;
+	mutex_enter(&cctx_pool.outerlock);
+	for (int i=0; i<cctx_pool.count; ++i)
+	{
+		XASSERT3U(cctx_pool.list[i], !=, NULL);
+		if (mutex_tryenter(&cctx_pool.listlocks[i]))
+		{
+			found = cctx_pool.list[i];
+			break;
+		}
+	}
+	if (likely(found!=NULL))
+	{
+		// slightly subtle optimization; compressor needs to reset *stream* (only on error), we reset *parameters*
+		ZSTD_CCtx_reset(found, ZSTD_reset_parameters);
+	}
+	else
+	{
+		aprint("ADAM: growing list from %d to %d entries", cctx_pool.count, 1 + cctx_pool.count);
+		int newlistbytes = sizeof(void *) * (cctx_pool.count + 1) ;
+		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
+		if (likely(newlist!=NULL))
+		{
+			//aprint("ADAM: 1");
+			newlist[0] = ZSTD_createCCtx_advanced(zstd_malloc);
+			//aprint("ADAM: 2");
+			if (likely(newlist[0]!=NULL))
+			{
+				//aprint("ADAM: 3");
+				int newlocklistbytes = sizeof(kmutex_t) * (cctx_pool.count + 1);
+				kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
+				//aprint("ADAM: 4");
+				if (likely(newlocklist!=NULL))
+				{
+					//aprint("ADAM: 5");
+					mutex_init(&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					//aprint("ADAM: 6");
+					if (likely(cctx_pool.count > 0))
+					{
+						XASSERT3U(cctx_pool.list, !=, NULL);
+						XASSERT3U(cctx_pool.listlocks, !=, NULL);
+						memcpy(&newlist[1], &cctx_pool.list[0], sizeof(void *) * (cctx_pool.count));
+						memcpy(&newlocklist[1], &cctx_pool.listlocks[0], sizeof(kmutex_t) * cctx_pool.count);
+						kmem_free(cctx_pool.list, sizeof(void *) * (cctx_pool.count));
+						kmem_free(cctx_pool.listlocks, sizeof(kmutex_t) * cctx_pool.count);
+					}
+					else
+					{
+						XASSERT3U(cctx_pool.list, ==, NULL);
+						XASSERT3U(cctx_pool.listlocks, ==, NULL);
+					}
+					//aprint("ADAM: 7");
+					cctx_pool.list = newlist;
+					cctx_pool.listlocks = newlocklist;
+					found = cctx_pool.list[0];
+					mutex_enter(&cctx_pool.listlocks[0]);
+					++cctx_pool.count;
+					//aprint("ADAM: 8");
+
+					// total success
+					aprint("ADAM: expanded lists and grabbed new entry %p", found);
+				}
+				else
+				{
+					ZSTD_freeCCtx(newlist[0]);
+					kmem_free(newlist, newlistbytes);
+					aprint("ADAM: failed to alloc new locklist");
+				}
+			}
+			else
+			{
+				kmem_free(newlist, newlistbytes);
+				aprint("ADAM: failed to alloc new cctx for list");
+			}
+		}
+		else
+		{
+			aprint("ADAM: failed to alloc larger list");
+		}
+		aprint("ADAM: resulting cctx is %p", found);
+	}
+	mutex_exit(&cctx_pool.outerlock);
+	return found;
+}
+static void UnGrabCCtx(void* cctx)
+{
+	XASSERT3U(cctx, !=, NULL);
+	mutex_enter(&cctx_pool.outerlock);
+	for (int i = 0; i < cctx_pool.count; ++i)
+	{
+		if (cctx_pool.list[i] == cctx)
+		{
+			if (mutex_tryenter(&cctx_pool.listlocks[i]))
+			{
+				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", cctx);
+			}
+			mutex_exit(&cctx_pool.listlocks[i]);
+			break;
+		}
+	}
+	mutex_exit(&cctx_pool.outerlock);
+}
+/////////////////////////////////////////// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/////////////////////////////////////////// CCTX OBJECT POOLING ROUGH DRAFT
+
 /* Convert ZFS internal enum to ZSTD level */
 static int
 zstd_enum_to_level(enum zio_zstd_levels level, int16_t *zstd_level)
@@ -379,11 +529,11 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		return (s_len);
 	}
 
-	ASSERT3U(d_len, >=, sizeof (*hdr));
-	ASSERT3U(d_len, <=, s_len);
-	ASSERT3U(zstd_level, !=, 0);
+	XASSERT3U(d_len, >=, sizeof (*hdr));
+	XASSERT3U(d_len, <=, s_len);
+	XASSERT3U(zstd_level, !=, 0);
 
-	cctx = ZSTD_createCCtx_advanced(zstd_malloc);
+	cctx = GrabCCtx();//ZSTD_createCCtx_advanced(zstd_malloc);
 
 	/*
 	 * Out of kernel memory, gently fall through - this will disable
@@ -407,12 +557,68 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	c_len = ZSTD_compress2(cctx,
-	    hdr->data,
-	    d_len - sizeof (*hdr),
-	    s_start, s_len);
+	const size_t MAXGULP = 4096;
+	size_t src_remain = s_len;
+	char* src_ptr = s_start;
+	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
+	ZSTD_inBuffer inBuff;
+	{
 
-	ZSTD_freeCCtx(cctx);
+		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
+		for(;;)
+		{
+			int is_final_gulp = 0;
+			size_t this_gulp_size = MAXGULP;
+			if (src_remain <= this_gulp_size)
+			{
+				this_gulp_size = src_remain;
+				is_final_gulp = 1;
+			}
+			XASSERT3U(src_remain, >, 0);
+			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
+			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
+			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
+			inBuff = thisInBuff;
+			if (ZSTD_isError(status))
+			{
+				compressedSize = status;
+				aprint("status was error: %s", ZSTD_getErrorName(status));
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				goto badc;
+			}
+			if (outBuff.pos == outBuff.size)
+			{
+				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				//aprint("done(output full, input remains); outpos==outsize");
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				goto badc; // ?
+			}
+			XASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
+			src_ptr += thisInBuff.pos;
+			XASSERT3U(src_remain, >=, thisInBuff.pos);
+			src_remain -= thisInBuff.pos;
+			if (src_remain == 0)
+			{
+				// totally done
+				break;
+			}
+#ifdef __KERNEL__
+			//kpreempt();
+#else
+#endif
+			cond_resched(); // possibly yield before taking next gulp
+		}
+
+		compressedSize = outBuff.pos;
+	}
+badc:
+
+	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	c_len = compressedSize;
+
+	UnGrabCCtx(cctx);//ZSTD_freeCCtx(cctx);
 
 	/* Error in the compression routine, disable compression. */
 	if (ZSTD_isError(c_len)) {
@@ -421,8 +627,14 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		 * too small, that is not a failure. Everything else is a
 		 * failure, so increment the compression failure counter.
 		 */
-		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall) {
+		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall)
+		{
+			aprint("ERROR status... ending");
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
+		}
+		else
+		{
+			//aprint("(dest was too small?)... ending");
 		}
 		return (s_len);
 	}
@@ -440,7 +652,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	 * The limit of 24 bits must not be exceeded. This allows a maximum
 	 * version 1677.72.15 which we don't expect to be ever reached.
 	 */
-	ASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
+	XASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
 
 	/*
 	 * Encode the compression level as well. We may need to know the
@@ -502,8 +714,8 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	ASSERT3U(d_len, >=, s_len);
-	ASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
+	XASSERT3U(d_len, >=, s_len);
+	XASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
 
 	/* Invalid compressed buffer size encoded at start */
 	if (c_len + sizeof (*hdr) > s_len) {
@@ -622,8 +834,8 @@ zstd_free(void *opaque __maybe_unused, void *ptr)
 	struct zstd_kmem *z = (ptr - sizeof (struct zstd_kmem));
 	enum zstd_kmem_type type;
 
-	ASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
-	ASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
+	XASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
+	XASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
 
 	type = z->kmem_type;
 	switch (type) {
@@ -654,6 +866,13 @@ create_fallback_mem(struct zstd_fallback_mem *mem, size_t size)
 static void __init
 zstd_mempool_init(void)
 {
+	mutex_init(&cctx_pool.outerlock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_enter(&cctx_pool.outerlock);
+	cctx_pool.count = 0;
+	cctx_pool.list = NULL;
+	cctx_pool.listlocks = NULL;
+	mutex_exit(&cctx_pool.outerlock);
+
 	zstd_mempool_cctx = (struct zstd_pool *)
 	    kmem_zalloc(ZSTD_POOL_MAX * sizeof (struct zstd_pool), KM_SLEEP);
 	zstd_mempool_dctx = (struct zstd_pool *)
@@ -698,6 +917,37 @@ release_pool(struct zstd_pool *pool)
 static void __exit
 zstd_mempool_deinit(void)
 {
+	// TODO: ADAM: deinit cctx_pool
+	mutex_enter(&cctx_pool.outerlock);
+	for (int i=0; i<cctx_pool.count; ++i)
+	{
+		if (!mutex_tryenter(&cctx_pool.listlocks[i]))
+		{
+			aprint("ADAM: nuts, trying to deinit pool but idx#%d still locked, waiting for it to unlock...", i);
+			//mutex_enter(&cctx_pool.listlocks[i]);
+			// ^ nope, not while holding outerlock - need to restart outer loop
+		}
+		ZSTD_freeCCtx(cctx_pool.list[i]);
+		mutex_exit(&cctx_pool.listlocks[i]);
+	}
+	if (cctx_pool.count > 0)
+	{
+		XASSERT3U(cctx_pool.list, !=, NULL);
+		XASSERT3U(cctx_pool.listlocks, !=, NULL);
+		kmem_free(cctx_pool.list, sizeof(void *) * cctx_pool.count);
+		kmem_free(cctx_pool.listlocks, sizeof(kmutex_t) * cctx_pool.count);
+	}
+	else
+	{
+		XASSERT3U(cctx_pool.list, ==, NULL);
+		XASSERT3U(cctx_pool.listlocks, ==, NULL);
+	}
+	cctx_pool.count = 0;
+	cctx_pool.list = NULL;
+	cctx_pool.listlocks = NULL;
+	mutex_exit(&cctx_pool.outerlock);
+	// ADAM: above is sketch
+
 	for (int i = 0; i < ZSTD_POOL_MAX; i++) {
 		release_pool(&zstd_mempool_cctx[i]);
 		release_pool(&zstd_mempool_dctx[i]);
@@ -714,6 +964,7 @@ zstd_mempool_deinit(void)
 void
 zfs_zstd_cache_reap_now(void)
 {
+	// TODO: ADAM: reap cctx_pool?
 	/*
 	 * calling alloc with zero size seeks
 	 * and releases old unused objects
