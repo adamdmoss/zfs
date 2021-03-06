@@ -96,8 +96,8 @@ void zvol_log_truncate(zvol_state_t *zv, dmu_tx_t *tx, uint64_t off,
     uint64_t len, boolean_t sync);
 void zvol_log_write(zvol_state_t *zv, dmu_tx_t *tx, uint64_t offset,
     uint64_t size, int sync);
-int zvol_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb,
-    zio_t *zio);
+int zvol_get_data(void *arg, uint64_t arg2, lr_write_t *lr, char *buf,
+    struct lwb *lwb, zio_t *zio);
 int zvol_dmu_ctx_init(zvol_dmu_state_t *zds, void *data, uint64_t off,
     uint64_t io_size, uint32_t dmu_flags, dmu_ctx_cb_t done_cb);
 void zvol_dmu_issue(zvol_dmu_state_t *zds);
