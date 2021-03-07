@@ -473,8 +473,11 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 			error = zfs_fastaccesschk_execute(zdp, cr);
 			if (!error) {
 				*zpp = zdp;
-				zhold(*zpp);
-				return (0);
+				if (likely(zhold(*zpp) != NULL)) {
+					return (0);
+				} else {
+					return (SET_ERROR(ENOENT));
+				}
 			}
 			return (error);
 		}
@@ -624,7 +627,13 @@ top:
 		/*
 		 * Null component name refers to the directory itself.
 		 */
-		zhold(dzp);
+		if (unlikely(zhold(dzp) == NULL))
+		{
+			if (have_acl)
+				zfs_acl_ids_free(&acl_ids);
+			ZFS_EXIT(zfsvfs);
+			return (SET_ERROR(ENOENT));
+		}
 		zp = dzp;
 		dl = NULL;
 		error = 0;
