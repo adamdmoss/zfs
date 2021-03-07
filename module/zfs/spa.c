@@ -1043,9 +1043,14 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 #error "unknown OS"
 #endif
 			}
-			if (t == ZIO_TYPE_READ && q == ZIO_TASKQ_INTERRUPT) {
+			else if (t == ZIO_TYPE_READ && q == ZIO_TASKQ_INTERRUPT) {
 				// ADAM: try this, decompression seems to
 				// happen in z_rd_int
+				pri = defclsyspri;//(defclsyspri + minclsyspri) / 2;
+			}
+			else if (t == ZIO_TYPE_WRITE && q == ZIO_TASKQ_INTERRUPT) {
+				// ADAM: try this, some(?) compression seems to
+				// happen in z_wr_int
 				pri = defclsyspri;//(defclsyspri + minclsyspri) / 2;
 			}
 			tq = taskq_create_proc(name, value, pri, 50,
