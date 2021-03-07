@@ -375,6 +375,13 @@ zstd_mempool_free(struct zstd_kmem *z)
 	mutex_exit(&z->pool->barrier);
 }
 
+/////////////////////////////////////////// OBJECT POOLING UTILS
+#define CACHELINE_ALIGNMENT (64)
+// todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
+typedef union cacheline_padded_kmutex {
+	kmutex_t _mutex;
+	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
+} cacheline_padded_kmutex_t;
 /////////////////////////////////////////// CCTX OBJECT POOLING ROUGH DRAFT
 /////////////////////////////////////////// VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV
 // this is more complicated and less generic than it should eventually be.
@@ -382,7 +389,7 @@ static struct
 {
 	kmutex_t outerlock;
 	int count;
-	kmutex_t* listlocks;
+	cacheline_padded_kmutex_t *listlocks;
 	void** list;
 } cctx_pool;
 
@@ -395,7 +402,7 @@ static void* GrabCCtx(void)
 	{
 		int j = (i + threadpid) % cctx_pool.count;
 		XASSERT3U(cctx_pool.list[j], !=, NULL);
-		if (mutex_tryenter(&cctx_pool.listlocks[j]))
+		if (mutex_tryenter((kmutex_t*)&cctx_pool.listlocks[j]))
 		{
 			found = cctx_pool.list[j];
 			break;
@@ -419,22 +426,22 @@ static void* GrabCCtx(void)
 			if (likely(newlist[0]!=NULL))
 			{
 				//aprint("ADAM: 3");
-				int newlocklistbytes = sizeof(kmutex_t) * (cctx_pool.count + 1);
-				kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
+				int newlocklistbytes = sizeof(cacheline_padded_kmutex_t) * (cctx_pool.count + 1);
+				cacheline_padded_kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
 				//aprint("ADAM: 4");
 				if (likely(newlocklist!=NULL))
 				{
 					//aprint("ADAM: 5");
-					mutex_init(&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					mutex_init((kmutex_t *)&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
 					//aprint("ADAM: 6");
 					if (likely(cctx_pool.count > 0))
 					{
 						XASSERT3U(cctx_pool.list, !=, NULL);
 						XASSERT3U(cctx_pool.listlocks, !=, NULL);
 						memcpy(&newlist[1], &cctx_pool.list[0], sizeof(void *) * (cctx_pool.count));
-						memcpy(&newlocklist[1], &cctx_pool.listlocks[0], sizeof(kmutex_t) * cctx_pool.count);
+						memcpy(&newlocklist[1], &cctx_pool.listlocks[0], sizeof(cacheline_padded_kmutex_t) * cctx_pool.count);
 						kmem_free(cctx_pool.list, sizeof(void *) * (cctx_pool.count));
-						kmem_free(cctx_pool.listlocks, sizeof(kmutex_t) * cctx_pool.count);
+						kmem_free(cctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * cctx_pool.count);
 					}
 					else
 					{
@@ -445,7 +452,7 @@ static void* GrabCCtx(void)
 					cctx_pool.list = newlist;
 					cctx_pool.listlocks = newlocklist;
 					found = cctx_pool.list[0];
-					mutex_enter(&cctx_pool.listlocks[0]);
+					mutex_enter((kmutex_t *)&cctx_pool.listlocks[0]);
 					++cctx_pool.count;
 					//aprint("ADAM: 8");
 
@@ -484,11 +491,11 @@ static void UnGrabCCtx(void* cctx)
 		int j = (i + threadpid) % cctx_pool.count;
 		if (cctx_pool.list[j] == cctx)
 		{
-			if (mutex_tryenter(&cctx_pool.listlocks[j]))
+			if (mutex_tryenter((kmutex_t *)&cctx_pool.listlocks[j]))
 			{
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", cctx);
 			}
-			mutex_exit(&cctx_pool.listlocks[j]);
+			mutex_exit((kmutex_t *)&cctx_pool.listlocks[j]);
 			break;
 		}
 	}
@@ -504,7 +511,7 @@ static struct
 {
 	kmutex_t outerlock;
 	int count;
-	kmutex_t *listlocks;
+	cacheline_padded_kmutex_t *listlocks;
 	void **list;
 } dctx_pool;
 
@@ -517,7 +524,7 @@ static void *GrabDCtx(void)
 	{
 		int j = (i + threadpid) % dctx_pool.count;
 		XASSERT3U(dctx_pool.list[j], !=, NULL);
-		if (mutex_tryenter(&dctx_pool.listlocks[j]))
+		if (mutex_tryenter((kmutex_t *)&dctx_pool.listlocks[j]))
 		{
 			found = dctx_pool.list[j];
 			break;
@@ -541,22 +548,22 @@ static void *GrabDCtx(void)
 			if (likely(newlist[0] != NULL))
 			{
 				//aprint("ADAM: 3");
-				int newlocklistbytes = sizeof(kmutex_t) * (dctx_pool.count + 1);
-				kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
+				int newlocklistbytes = sizeof(cacheline_padded_kmutex_t) * (dctx_pool.count + 1);
+				cacheline_padded_kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
 				//aprint("ADAM: 4");
 				if (likely(newlocklist != NULL))
 				{
 					//aprint("ADAM: 5");
-					mutex_init(&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					mutex_init((kmutex_t *)&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
 					//aprint("ADAM: 6");
 					if (likely(dctx_pool.count > 0))
 					{
 						XASSERT3U(dctx_pool.list, !=, NULL);
 						XASSERT3U(dctx_pool.listlocks, !=, NULL);
 						memcpy(&newlist[1], &dctx_pool.list[0], sizeof(void *) * (dctx_pool.count));
-						memcpy(&newlocklist[1], &dctx_pool.listlocks[0], sizeof(kmutex_t) * dctx_pool.count);
+						memcpy(&newlocklist[1], &dctx_pool.listlocks[0], sizeof(cacheline_padded_kmutex_t) * dctx_pool.count);
 						kmem_free(dctx_pool.list, sizeof(void *) * (dctx_pool.count));
-						kmem_free(dctx_pool.listlocks, sizeof(kmutex_t) * dctx_pool.count);
+						kmem_free(dctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * dctx_pool.count);
 					}
 					else
 					{
@@ -567,7 +574,7 @@ static void *GrabDCtx(void)
 					dctx_pool.list = newlist;
 					dctx_pool.listlocks = newlocklist;
 					found = dctx_pool.list[0];
-					mutex_enter(&dctx_pool.listlocks[0]);
+					mutex_enter((kmutex_t *)&dctx_pool.listlocks[0]);
 					++dctx_pool.count;
 					//aprint("ADAM: 8");
 
@@ -606,11 +613,11 @@ static void UnGrabDCtx(void *dctx)
 		int j = (i + threadpid) % dctx_pool.count;
 		if (dctx_pool.list[j] == dctx)
 		{
-			if (mutex_tryenter(&dctx_pool.listlocks[j]))
+			if (mutex_tryenter((kmutex_t *)&dctx_pool.listlocks[j]))
 			{
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", dctx);
 			}
-			mutex_exit(&dctx_pool.listlocks[j]);
+			mutex_exit((kmutex_t *)&dctx_pool.listlocks[j]);
 			break;
 		}
 	}
@@ -1059,21 +1066,21 @@ zstd_mempool_deinit(void)
 	mutex_enter(&cctx_pool.outerlock);
 	for (int i=0; i<cctx_pool.count; ++i)
 	{
-		if (!mutex_tryenter(&cctx_pool.listlocks[i]))
+		if (!mutex_tryenter((kmutex_t *)&cctx_pool.listlocks[i]))
 		{
 			aprint("ADAM: nuts, trying to deinit pool but idx#%d still locked, waiting for it to unlock...", i);
 			//mutex_enter(&cctx_pool.listlocks[i]);
 			// ^ nope, not while holding outerlock - need to restart outer loop
 		}
 		ZSTD_freeCCtx(cctx_pool.list[i]);
-		mutex_exit(&cctx_pool.listlocks[i]);
+		mutex_exit((kmutex_t *)&cctx_pool.listlocks[i]);
 	}
 	if (cctx_pool.count > 0)
 	{
 		XASSERT3U(cctx_pool.list, !=, NULL);
 		XASSERT3U(cctx_pool.listlocks, !=, NULL);
 		kmem_free(cctx_pool.list, sizeof(void *) * cctx_pool.count);
-		kmem_free(cctx_pool.listlocks, sizeof(kmutex_t) * cctx_pool.count);
+		kmem_free(cctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * cctx_pool.count);
 	}
 	else
 	{
@@ -1090,21 +1097,21 @@ zstd_mempool_deinit(void)
 	mutex_enter(&dctx_pool.outerlock);
 	for (int i = 0; i < dctx_pool.count; ++i)
 	{
-		if (!mutex_tryenter(&dctx_pool.listlocks[i]))
+		if (!mutex_tryenter((kmutex_t *)&dctx_pool.listlocks[i]))
 		{
 			aprint("ADAM: nuts, trying to deinit dctx pool but idx#%d still locked, waiting for it to unlock...", i);
 			//mutex_enter(&dctx_pool.listlocks[i]);
 			// ^ nope, not while holding outerlock - need to restart outer loop
 		}
 		ZSTD_freeDCtx(dctx_pool.list[i]);
-		mutex_exit(&dctx_pool.listlocks[i]);
+		mutex_exit((kmutex_t *)&dctx_pool.listlocks[i]);
 	}
 	if (dctx_pool.count > 0)
 	{
 		XASSERT3U(dctx_pool.list, !=, NULL);
 		XASSERT3U(dctx_pool.listlocks, !=, NULL);
 		kmem_free(dctx_pool.list, sizeof(void *) * dctx_pool.count);
-		kmem_free(dctx_pool.listlocks, sizeof(kmutex_t) * dctx_pool.count);
+		kmem_free(dctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * dctx_pool.count);
 	}
 	else
 	{
