@@ -512,12 +512,14 @@ static void *GrabDCtx(void)
 {
 	void *found = NULL;
 	mutex_enter(&dctx_pool.outerlock);
+	const int threadpid = (int)getpid();
 	for (int i = 0; i < dctx_pool.count; ++i)
 	{
-		XASSERT3U(dctx_pool.list[i], !=, NULL);
-		if (mutex_tryenter(&dctx_pool.listlocks[i]))
+		int j = (i + threadpid) % dctx_pool.count;
+		XASSERT3U(dctx_pool.list[j], !=, NULL);
+		if (mutex_tryenter(&dctx_pool.listlocks[j]))
 		{
-			found = dctx_pool.list[i];
+			found = dctx_pool.list[j];
 			break;
 		}
 	}
@@ -598,15 +600,17 @@ static void UnGrabDCtx(void *dctx)
 {
 	XASSERT3U(dctx, !=, NULL);
 	mutex_enter(&dctx_pool.outerlock);
+	const int threadpid = (int)getpid();
 	for (int i = 0; i < dctx_pool.count; ++i)
 	{
-		if (dctx_pool.list[i] == dctx)
+		int j = (i + threadpid) % dctx_pool.count;
+		if (dctx_pool.list[j] == dctx)
 		{
-			if (mutex_tryenter(&dctx_pool.listlocks[i]))
+			if (mutex_tryenter(&dctx_pool.listlocks[j]))
 			{
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", dctx);
 			}
-			mutex_exit(&dctx_pool.listlocks[i]);
+			mutex_exit(&dctx_pool.listlocks[j]);
 			break;
 		}
 	}
