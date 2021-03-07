@@ -43,6 +43,7 @@
 //#include <sys/param.h>
 //#include <sys/sysmacros.h>
 ///#include <sys/zfs_context.h>
+#include <sys/zfs_context.h>
 #include <sys/zio_compress.h>
 #include <sys/spa.h>
 #include <sys/zstd/zstd.h>
@@ -55,7 +56,7 @@
 //#define __KERNEL__
 #include <sys/debug.h>
 #include <sys/sysmacros.h>
-
+//#include <os/linux/spl/sys/thread.h>
 
 extern	int printk(const char *fmt, ...);
 #ifdef __KERNEL__
@@ -389,12 +390,14 @@ static void* GrabCCtx(void)
 {
 	void* found = NULL;
 	mutex_enter(&cctx_pool.outerlock);
+	const int threadpid = (int)getpid();
 	for (int i=0; i<cctx_pool.count; ++i)
 	{
-		XASSERT3U(cctx_pool.list[i], !=, NULL);
-		if (mutex_tryenter(&cctx_pool.listlocks[i]))
+		int j = (i + threadpid) % cctx_pool.count;
+		XASSERT3U(cctx_pool.list[j], !=, NULL);
+		if (mutex_tryenter(&cctx_pool.listlocks[j]))
 		{
-			found = cctx_pool.list[i];
+			found = cctx_pool.list[j];
 			break;
 		}
 	}
@@ -475,15 +478,17 @@ static void UnGrabCCtx(void* cctx)
 {
 	XASSERT3U(cctx, !=, NULL);
 	mutex_enter(&cctx_pool.outerlock);
+	const int threadpid = (int)getpid();
 	for (int i = 0; i < cctx_pool.count; ++i)
 	{
-		if (cctx_pool.list[i] == cctx)
+		int j = (i + threadpid) % cctx_pool.count;
+		if (cctx_pool.list[j] == cctx)
 		{
-			if (mutex_tryenter(&cctx_pool.listlocks[i]))
+			if (mutex_tryenter(&cctx_pool.listlocks[j]))
 			{
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", cctx);
 			}
-			mutex_exit(&cctx_pool.listlocks[i]);
+			mutex_exit(&cctx_pool.listlocks[j]);
 			break;
 		}
 	}
@@ -491,6 +496,124 @@ static void UnGrabCCtx(void* cctx)
 }
 /////////////////////////////////////////// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 /////////////////////////////////////////// CCTX OBJECT POOLING ROUGH DRAFT
+
+/////////////////////////////////////////// DCTX OBJECT POOLING ROUGH DRAFT
+/////////////////////////////////////////// VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV
+// this is more complicated and less generic than it should eventually be.
+static struct
+{
+	kmutex_t outerlock;
+	int count;
+	kmutex_t *listlocks;
+	void **list;
+} dctx_pool;
+
+static void *GrabDCtx(void)
+{
+	void *found = NULL;
+	mutex_enter(&dctx_pool.outerlock);
+	for (int i = 0; i < dctx_pool.count; ++i)
+	{
+		XASSERT3U(dctx_pool.list[i], !=, NULL);
+		if (mutex_tryenter(&dctx_pool.listlocks[i]))
+		{
+			found = dctx_pool.list[i];
+			break;
+		}
+	}
+	if (likely(found != NULL))
+	{
+		// slightly subtle optimization; decompressor needs to reset *stream* (only on error), we reset *parameters*
+		ZSTD_DCtx_reset(found, ZSTD_reset_parameters);
+	}
+	else
+	{
+		aprint("ADAM: growing dctx list from %d to %d entries", dctx_pool.count, 1 + dctx_pool.count);
+		int newlistbytes = sizeof(void *) * (dctx_pool.count + 1);
+		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
+		if (likely(newlist != NULL))
+		{
+			//aprint("ADAM: 1");
+			newlist[0] = ZSTD_createDCtx_advanced(zstd_dctx_malloc);
+			//aprint("ADAM: 2");
+			if (likely(newlist[0] != NULL))
+			{
+				//aprint("ADAM: 3");
+				int newlocklistbytes = sizeof(kmutex_t) * (dctx_pool.count + 1);
+				kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
+				//aprint("ADAM: 4");
+				if (likely(newlocklist != NULL))
+				{
+					//aprint("ADAM: 5");
+					mutex_init(&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					//aprint("ADAM: 6");
+					if (likely(dctx_pool.count > 0))
+					{
+						XASSERT3U(dctx_pool.list, !=, NULL);
+						XASSERT3U(dctx_pool.listlocks, !=, NULL);
+						memcpy(&newlist[1], &dctx_pool.list[0], sizeof(void *) * (dctx_pool.count));
+						memcpy(&newlocklist[1], &dctx_pool.listlocks[0], sizeof(kmutex_t) * dctx_pool.count);
+						kmem_free(dctx_pool.list, sizeof(void *) * (dctx_pool.count));
+						kmem_free(dctx_pool.listlocks, sizeof(kmutex_t) * dctx_pool.count);
+					}
+					else
+					{
+						XASSERT3U(dctx_pool.list, ==, NULL);
+						XASSERT3U(dctx_pool.listlocks, ==, NULL);
+					}
+					//aprint("ADAM: 7");
+					dctx_pool.list = newlist;
+					dctx_pool.listlocks = newlocklist;
+					found = dctx_pool.list[0];
+					mutex_enter(&dctx_pool.listlocks[0]);
+					++dctx_pool.count;
+					//aprint("ADAM: 8");
+
+					// total success
+					aprint("ADAM: expanded lists and grabbed new entry %p", found);
+				}
+				else
+				{
+					ZSTD_freeDCtx(newlist[0]);
+					kmem_free(newlist, newlistbytes);
+					aprint("ADAM: failed to alloc new locklist");
+				}
+			}
+			else
+			{
+				kmem_free(newlist, newlistbytes);
+				aprint("ADAM: failed to alloc new dctx for list");
+			}
+		}
+		else
+		{
+			aprint("ADAM: failed to alloc larger list");
+		}
+		aprint("ADAM: resulting dctx is %p", found);
+	}
+	mutex_exit(&dctx_pool.outerlock);
+	return found;
+}
+static void UnGrabDCtx(void *dctx)
+{
+	XASSERT3U(dctx, !=, NULL);
+	mutex_enter(&dctx_pool.outerlock);
+	for (int i = 0; i < dctx_pool.count; ++i)
+	{
+		if (dctx_pool.list[i] == dctx)
+		{
+			if (mutex_tryenter(&dctx_pool.listlocks[i]))
+			{
+				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p, but should be locked already if it was grabbed", dctx);
+			}
+			mutex_exit(&dctx_pool.listlocks[i]);
+			break;
+		}
+	}
+	mutex_exit(&dctx_pool.outerlock);
+}
+/////////////////////////////////////////// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/////////////////////////////////////////// DCTX OBJECT POOLING ROUGH DRAFT
 
 /* Convert ZFS internal enum to ZSTD level */
 static int
@@ -561,7 +684,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	size_t src_remain = s_len;
 	char* src_ptr = s_start;
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
-	ZSTD_inBuffer inBuff;
 	{
 
 		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
@@ -578,7 +700,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
 			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
 			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
-			inBuff = thisInBuff;
 			if (ZSTD_isError(status))
 			{
 				compressedSize = status;
@@ -723,7 +844,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	dctx = ZSTD_createDCtx_advanced(zstd_dctx_malloc);
+	dctx = GrabDCtx();//ZSTD_createDCtx_advanced(zstd_dctx_malloc);
 	if (!dctx) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
 		return (1);
@@ -734,7 +855,6 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 
 	/* Decompress the data and release the context */
 	result = ZSTD_decompressDCtx(dctx, d_start, d_len, hdr->data, c_len);
-	ZSTD_freeDCtx(dctx);
 
 	/*
 	 * Returns 0 on success (decompression function returned non-negative)
@@ -742,8 +862,12 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	 */
 	if (ZSTD_isError(result)) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_fail);
+		ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+		UnGrabDCtx(dctx);
 		return (1);
 	}
+
+	UnGrabDCtx(dctx); // ZSTD_freeDCtx(dctx);
 
 	if (level) {
 		*level = hdr_copy.level;
@@ -866,6 +990,7 @@ create_fallback_mem(struct zstd_fallback_mem *mem, size_t size)
 static void __init
 zstd_mempool_init(void)
 {
+	// CCTX RECYCLER...
 	mutex_init(&cctx_pool.outerlock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_enter(&cctx_pool.outerlock);
 	cctx_pool.count = 0;
@@ -873,6 +998,15 @@ zstd_mempool_init(void)
 	cctx_pool.listlocks = NULL;
 	mutex_exit(&cctx_pool.outerlock);
 
+	// DCTX RECYCLER...
+	mutex_init(&dctx_pool.outerlock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_enter(&dctx_pool.outerlock);
+	dctx_pool.count = 0;
+	dctx_pool.list = NULL;
+	dctx_pool.listlocks = NULL;
+	mutex_exit(&dctx_pool.outerlock);
+
+	// OTHER STUFF...
 	zstd_mempool_cctx = (struct zstd_pool *)
 	    kmem_zalloc(ZSTD_POOL_MAX * sizeof (struct zstd_pool), KM_SLEEP);
 	zstd_mempool_dctx = (struct zstd_pool *)
@@ -946,6 +1080,37 @@ zstd_mempool_deinit(void)
 	cctx_pool.list = NULL;
 	cctx_pool.listlocks = NULL;
 	mutex_exit(&cctx_pool.outerlock);
+	// ADAM: above is sketch
+
+	// TODO: ADAM: deinit dctx_pool
+	mutex_enter(&dctx_pool.outerlock);
+	for (int i = 0; i < dctx_pool.count; ++i)
+	{
+		if (!mutex_tryenter(&dctx_pool.listlocks[i]))
+		{
+			aprint("ADAM: nuts, trying to deinit dctx pool but idx#%d still locked, waiting for it to unlock...", i);
+			//mutex_enter(&dctx_pool.listlocks[i]);
+			// ^ nope, not while holding outerlock - need to restart outer loop
+		}
+		ZSTD_freeDCtx(dctx_pool.list[i]);
+		mutex_exit(&dctx_pool.listlocks[i]);
+	}
+	if (dctx_pool.count > 0)
+	{
+		XASSERT3U(dctx_pool.list, !=, NULL);
+		XASSERT3U(dctx_pool.listlocks, !=, NULL);
+		kmem_free(dctx_pool.list, sizeof(void *) * dctx_pool.count);
+		kmem_free(dctx_pool.listlocks, sizeof(kmutex_t) * dctx_pool.count);
+	}
+	else
+	{
+		XASSERT3U(dctx_pool.list, ==, NULL);
+		XASSERT3U(dctx_pool.listlocks, ==, NULL);
+	}
+	dctx_pool.count = 0;
+	dctx_pool.list = NULL;
+	dctx_pool.listlocks = NULL;
+	mutex_exit(&dctx_pool.outerlock);
 	// ADAM: above is sketch
 
 	for (int i = 0; i < ZSTD_POOL_MAX; i++) {
