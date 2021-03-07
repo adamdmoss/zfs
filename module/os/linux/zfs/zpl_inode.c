@@ -588,13 +588,16 @@ zpl_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 	int error;
 	fstrans_cookie_t cookie;
 
+	if (unlikely(igrab(ip) == NULL)) {
+		return (-ENOENT);
+	}
+
 	if (ip->i_nlink >= ZFS_LINK_MAX)
 		return (-EMLINK);
 
-	crhold(cr);
 	ip->i_ctime = current_time(ip);
-	igrab(ip); /* Use ihold() if available */
 
+	crhold(cr);
 	cookie = spl_fstrans_mark();
 	error = -zfs_link(ITOZ(dir), ITOZ(ip), dname(dentry), cr, 0);
 	if (error) {

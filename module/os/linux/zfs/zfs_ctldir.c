@@ -590,7 +590,10 @@ struct inode *
 zfsctl_root(znode_t *zp)
 {
 	ASSERT(zfs_has_ctldir(zp));
-	igrab(ZTOZSB(zp)->z_ctldir);
+	if (unlikely(igrab(ZTOZSB(zp)->z_ctldir) == NULL))
+	{
+		return NULL;
+	}
 	return (ZTOZSB(zp)->z_ctldir);
 }
 

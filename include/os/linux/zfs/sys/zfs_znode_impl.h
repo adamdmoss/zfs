@@ -73,7 +73,14 @@ extern "C" {
 #define	zn_has_cached_data(zp)		((zp)->z_is_mapped)
 #define	zn_rlimit_fsize(zp, uio)	(0)
 
+#if defined(__GNUC__)
+/* it's critical that callers check (or explicitly discard) the return of igrab() and thus zhold(); a NULL return means that a reference was not added so a symmetric zrele() must not be performed */
+static inline struct inode * __attribute__((warn_unused_result))
+    _zhold(struct inode *i) { return igrab(i); }
+#define	zhold(zp)	_zhold(ZTOI((zp)))
+#else // defined(__GNUC__)
 #define	zhold(zp)	igrab(ZTOI((zp)))
+#endif // defined(__GNUC__)
 #define	zrele(zp)	iput(ZTOI((zp)))
 
 /* Called on entry to each ZFS inode and vfs operation. */
