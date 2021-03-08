@@ -463,7 +463,8 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 			error = zfs_fastaccesschk_execute(zdp, cr);
 			if (!error) {
 				*zpp = zdp;
-				zhold(*zpp);
+				/* Shouldn't be first ref, so zhold() cannot return NULL */
+				VERIFY3P(zhold(*zpp), !=, NULL);
 				return (0);
 			}
 			return (error);
@@ -614,7 +615,8 @@ top:
 		/*
 		 * Null component name refers to the directory itself.
 		 */
-		zhold(dzp);
+		/* Shouldn't be first ref, so zhold() cannot return NULL */
+		VERIFY3P(zhold(dzp), !=, NULL);
 		zp = dzp;
 		dl = NULL;
 		error = 0;

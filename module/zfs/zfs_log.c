@@ -257,7 +257,8 @@ zfs_xattr_owner_unlinked(znode_t *zp)
 	if (tzp != zp)
 		zrele(tzp);
 #else
-	zhold(zp);
+	/* Shouldn't be first ref, so zhold() cannot return NULL */
+	VERIFY3P(zhold(zp), !=, NULL);
 	/*
 	 * if zp is XATTR node, keep walking up via z_xattr_parent until we
 	 * get the owner
