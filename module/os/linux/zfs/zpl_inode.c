@@ -594,7 +594,7 @@ zpl_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 	crhold(cr);
 	ip->i_ctime = current_time(ip);
 	/* Shouldn't be first ref, so igrab() cannot return NULL */
-	VERIFY3P(igrab(ip), !=, NULL); /* Use ihold() if available */
+	VERIFY3P(igrab(ip), !=, NULL);
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_link(ITOZ(dir), ITOZ(ip), dname(dentry), cr, 0);
