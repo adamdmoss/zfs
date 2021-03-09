@@ -1735,7 +1735,7 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 			    0, kcred, NULL, NULL) == 0);
 		} else {
 			/* Shouldn't be first ref, so igrab() cannot return NULL */
-			VERIFY3P(igrab(*ipp), != NULL);
+			VERIFY3P(igrab(*ipp), !=, NULL);
 		}
 		ZFS_EXIT(zfsvfs);
 		return (0);
