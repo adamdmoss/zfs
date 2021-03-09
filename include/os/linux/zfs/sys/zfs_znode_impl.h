@@ -78,9 +78,9 @@ extern "C" {
 static inline struct inode * __attribute__((warn_unused_result))
     _zhold(struct inode *i) { return igrab(i); }
 #define	zhold(zp)	_zhold(ZTOI((zp)))
-#else // defined(__GNUC__)
+#else /* defined(__GNUC__) */
 #define	zhold(zp)	igrab(ZTOI((zp)))
-#endif // defined(__GNUC__)
+#endif /* defined(__GNUC__) */
 #define	zrele(zp)	iput(ZTOI((zp)))
 
 /* Called on entry to each ZFS inode and vfs operation. */
