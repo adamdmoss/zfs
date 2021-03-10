@@ -56,9 +56,13 @@
 #include <sys/sysmacros.h>
 //#include <os/linux/spl/sys/thread.h>
 
-#if 0 && defined(__KERNEL__)
+#if defined(__KERNEL__)
+#if 0
 extern	int printk(const char *fmt, ...);
 #define aprint printk
+#else
+#define aprint(...) do{}while(0)
+#endif
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
