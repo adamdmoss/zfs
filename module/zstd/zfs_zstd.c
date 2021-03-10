@@ -51,37 +51,22 @@
 #define	ZSTD_STATIC_LINKING_ONLY
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
-//#include <linux/printk.h>
 
-//#define __KERNEL__
 #include <sys/debug.h>
 #include <sys/sysmacros.h>
 //#include <os/linux/spl/sys/thread.h>
 
+#if 0 && defined(__KERNEL__)
 extern	int printk(const char *fmt, ...);
-#ifdef __KERNEL__
 #define aprint printk
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
-#define XASSERT3U XASSERT3
-// ^ bleh, fixme
 
-//#define __KERNEL__
-//#include <linux/kernel.h>
-//#include <linux/module.h>
-//#include <linux/fs.h>
-//#include <asm/uaccess.h> // for put_user //
-//#include <linux/ioport.h>
+//#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3 VERIFY3
+#define XASSERT3U VERIFY3U
 
-////#include <linux/tracepoint.h>
-////#include "linux/kernel.h"
-//#include <linux/kernel.h>
-//#include <sys/klog.h>
-//#include <sys/zfs_debug.h>
-//#include <linux/module.h>
-//#include <linux/kernel.h>
 
 kstat_t *zstd_ksp = NULL;
 
