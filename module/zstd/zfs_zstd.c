@@ -367,6 +367,7 @@ zstd_mempool_free(struct zstd_kmem *z)
 /////////////////////////////////////////// OBJECT POOLING UTILS
 #define CACHELINE_ALIGNMENT (64)
 // todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
+// todo: figure out why the padding appears to matter at all, since access to any inner lock is serialized on the outer lock anyway - perhaps not a contention issue so much as atomic access invalidating cache for all cores...?
 typedef union cacheline_padded_kmutex {
 	kmutex_t _mutex;
 	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
