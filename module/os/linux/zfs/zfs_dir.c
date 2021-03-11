@@ -391,8 +391,7 @@ zfs_dirlook(znode_t *dzp, char *name, znode_t **zpp, int flags,
 
 	if (name[0] == 0 || (name[0] == '.' && name[1] == 0)) {
 		*zpp = dzp;
-		/* Shouldn't be first ref, so zhold() cannot return NULL */
-		VERIFY3P(zhold(*zpp), !=, NULL);
+		zhold(*zpp);
 	} else if (name[0] == '.' && name[1] == '.' && name[2] == 0) {
 		zfsvfs_t *zfsvfs = ZTOZSB(dzp);
 
@@ -417,7 +416,6 @@ zfs_dirlook(znode_t *dzp, char *name, znode_t **zpp, int flags,
 		rw_exit(&dzp->z_parent_lock);
 	} else if (zfs_has_ctldir(dzp) && strcmp(name, ZFS_CTLDIR_NAME) == 0) {
 		ip = zfsctl_root(dzp);
-		VERIFY3P(ip, !=, NULL);
 		*zpp = ITOZ(ip);
 	} else {
 		int zf;

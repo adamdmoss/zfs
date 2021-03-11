@@ -73,14 +73,8 @@ extern "C" {
 #define	zn_has_cached_data(zp)		((zp)->z_is_mapped)
 #define	zn_rlimit_fsize(zp, uio)	(0)
 
-#if defined(__GNUC__)
-/* it's critical that callers check, VERIFY(), or explicitly discard the return of igrab() and thus zhold(); a NULL return means that a reference was not added so a symmetric zrele() must not be performed */
-static inline struct inode * __attribute__((warn_unused_result))
-    _zhold(struct inode *i) { return igrab(i); }
-#define	zhold(zp)	_zhold(ZTOI((zp)))
-#else /* defined(__GNUC__) */
-#define	zhold(zp)	igrab(ZTOI((zp)))
-#endif /* defined(__GNUC__) */
+/* zhold() wraps igrab() on Linux, and igrab() may fail when the inode is in the process of being deleted.  As zhold() must only be called when a ref already exists - so the inode cannot be mid-deletion - we VERIFY() this. */
+#define	zhold(zp)	VERIFY3P(igrab(ZTOI((zp))), !=, NULL)
 #define	zrele(zp)	iput(ZTOI((zp)))
 
 /* Called on entry to each ZFS inode and vfs operation. */

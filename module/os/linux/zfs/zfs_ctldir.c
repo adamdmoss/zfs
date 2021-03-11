@@ -590,7 +590,7 @@ struct inode *
 zfsctl_root(znode_t *zp)
 {
 	ASSERT(zfs_has_ctldir(zp));
-	/* Shouldn't be first ref, so igrab() cannot return NULL */
+	/* Must have an existing ref, so igrab() cannot return NULL */
 	VERIFY3P(igrab(ZTOZSB(zp)->z_ctldir), !=, NULL);
 	return (ZTOZSB(zp)->z_ctldir);
 }
