@@ -593,7 +593,7 @@ zpl_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 
 	crhold(cr);
 	ip->i_ctime = current_time(ip);
-	/* Shouldn't be first ref, so igrab() cannot return NULL */
+	/* Must have an existing ref, so igrab() cannot return NULL */
 	VERIFY3P(igrab(ip), !=, NULL);
 
 	cookie = spl_fstrans_mark();
