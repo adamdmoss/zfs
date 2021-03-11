@@ -38,11 +38,9 @@
  * [1] Portions of this software were developed by Allan Jude
  *     under sponsorship from the FreeBSD Foundation.
  */
-//#define MODULE
-//#undef __KERNEL__
-//#include <sys/param.h>
-//#include <sys/sysmacros.h>
-///#include <sys/zfs_context.h>
+
+#include <sys/param.h>
+#include <sys/sysmacros.h>
 #include <sys/zfs_context.h>
 #include <sys/zio_compress.h>
 #include <sys/spa.h>
@@ -52,9 +50,6 @@
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
 
-#include <sys/debug.h>
-#include <sys/sysmacros.h>
-//#include <os/linux/spl/sys/thread.h>
 
 #if defined(__KERNEL__)
 #if 0
@@ -66,10 +61,6 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-
-//#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
-#define XASSERT3 VERIFY3
-#define XASSERT3U VERIFY3U
 
 
 kstat_t *zstd_ksp = NULL;
@@ -391,7 +382,7 @@ static void* GrabCCtx(void)
 	for (int i=0; i<cctx_pool.count; ++i)
 	{
 		int j = (i + threadpid) % cctx_pool.count;
-		XASSERT3U(cctx_pool.list[j], !=, NULL);
+		VERIFY3P(cctx_pool.list[j], !=, NULL);
 		if (mutex_tryenter((kmutex_t*)&cctx_pool.listlocks[j]))
 		{
 			found = cctx_pool.list[j];
@@ -426,8 +417,8 @@ static void* GrabCCtx(void)
 					//aprint("ADAM: 6");
 					if (likely(cctx_pool.count > 0))
 					{
-						XASSERT3U(cctx_pool.list, !=, NULL);
-						XASSERT3U(cctx_pool.listlocks, !=, NULL);
+						VERIFY3P(cctx_pool.list, !=, NULL);
+						VERIFY3P(cctx_pool.listlocks, !=, NULL);
 						memcpy(&newlist[1], &cctx_pool.list[0], sizeof(void *) * (cctx_pool.count));
 						memcpy(&newlocklist[1], &cctx_pool.listlocks[0], sizeof(cacheline_padded_kmutex_t) * cctx_pool.count);
 						kmem_free(cctx_pool.list, sizeof(void *) * (cctx_pool.count));
@@ -435,8 +426,8 @@ static void* GrabCCtx(void)
 					}
 					else
 					{
-						XASSERT3U(cctx_pool.list, ==, NULL);
-						XASSERT3U(cctx_pool.listlocks, ==, NULL);
+						VERIFY3P(cctx_pool.list, ==, NULL);
+						VERIFY3P(cctx_pool.listlocks, ==, NULL);
 					}
 					//aprint("ADAM: 7");
 					cctx_pool.list = newlist;
@@ -473,7 +464,7 @@ static void* GrabCCtx(void)
 }
 static void UnGrabCCtx(void* cctx)
 {
-	XASSERT3U(cctx, !=, NULL);
+	VERIFY3P(cctx, !=, NULL);
 	mutex_enter(&cctx_pool.outerlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < cctx_pool.count; ++i)
@@ -513,7 +504,7 @@ static void *GrabDCtx(void)
 	for (int i = 0; i < dctx_pool.count; ++i)
 	{
 		int j = (i + threadpid) % dctx_pool.count;
-		XASSERT3U(dctx_pool.list[j], !=, NULL);
+		VERIFY3P(dctx_pool.list[j], !=, NULL);
 		if (mutex_tryenter((kmutex_t *)&dctx_pool.listlocks[j]))
 		{
 			found = dctx_pool.list[j];
@@ -548,8 +539,8 @@ static void *GrabDCtx(void)
 					//aprint("ADAM: 6");
 					if (likely(dctx_pool.count > 0))
 					{
-						XASSERT3U(dctx_pool.list, !=, NULL);
-						XASSERT3U(dctx_pool.listlocks, !=, NULL);
+						VERIFY3P(dctx_pool.list, !=, NULL);
+						VERIFY3P(dctx_pool.listlocks, !=, NULL);
 						memcpy(&newlist[1], &dctx_pool.list[0], sizeof(void *) * (dctx_pool.count));
 						memcpy(&newlocklist[1], &dctx_pool.listlocks[0], sizeof(cacheline_padded_kmutex_t) * dctx_pool.count);
 						kmem_free(dctx_pool.list, sizeof(void *) * (dctx_pool.count));
@@ -557,8 +548,8 @@ static void *GrabDCtx(void)
 					}
 					else
 					{
-						XASSERT3U(dctx_pool.list, ==, NULL);
-						XASSERT3U(dctx_pool.listlocks, ==, NULL);
+						VERIFY3P(dctx_pool.list, ==, NULL);
+						VERIFY3P(dctx_pool.listlocks, ==, NULL);
 					}
 					//aprint("ADAM: 7");
 					dctx_pool.list = newlist;
@@ -595,7 +586,7 @@ static void *GrabDCtx(void)
 }
 static void UnGrabDCtx(void *dctx)
 {
-	XASSERT3U(dctx, !=, NULL);
+	VERIFY3P(dctx, !=, NULL);
 	mutex_enter(&dctx_pool.outerlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < dctx_pool.count; ++i)
@@ -653,9 +644,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		return (s_len);
 	}
 
-	XASSERT3U(d_len, >=, sizeof (*hdr));
-	XASSERT3U(d_len, <=, s_len);
-	XASSERT3U(zstd_level, !=, 0);
+	ASSERT3U(d_len, >=, sizeof (*hdr));
+	ASSERT3U(d_len, <=, s_len);
+	ASSERT3U(zstd_level, !=, 0);
 
 	cctx = GrabCCtx();//ZSTD_createCCtx_advanced(zstd_malloc);
 
@@ -697,7 +688,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				this_gulp_size = src_remain;
 				is_final_gulp = 1;
 			}
-			XASSERT3U(src_remain, >, 0);
+			VERIFY3S(src_remain, >, 0);
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
 			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
 			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
@@ -717,9 +708,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
-			XASSERT3U(thisInBuff.pos, ==, thisInBuff.size);
+			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
 			src_ptr += thisInBuff.pos;
-			XASSERT3U(src_remain, >=, thisInBuff.pos);
+			VERIFY3U(src_remain, >=, thisInBuff.pos);
 			src_remain -= thisInBuff.pos;
 			if (src_remain == 0)
 			{
@@ -774,7 +765,7 @@ badc:
 	 * The limit of 24 bits must not be exceeded. This allows a maximum
 	 * version 1677.72.15 which we don't expect to be ever reached.
 	 */
-	XASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
+	ASSERT3U(ZSTD_VERSION_NUMBER, <=, 0xFFFFFF);
 
 	/*
 	 * Encode the compression level as well. We may need to know the
@@ -836,8 +827,8 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	XASSERT3U(d_len, >=, s_len);
-	XASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
+	ASSERT3U(d_len, >=, s_len);
+	ASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
 
 	/* Invalid compressed buffer size encoded at start */
 	if (c_len + sizeof (*hdr) > s_len) {
@@ -959,8 +950,8 @@ zstd_free(void *opaque __maybe_unused, void *ptr)
 	struct zstd_kmem *z = (ptr - sizeof (struct zstd_kmem));
 	enum zstd_kmem_type type;
 
-	XASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
-	XASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
+	ASSERT3U(z->kmem_type, <, ZSTD_KMEM_COUNT);
+	ASSERT3U(z->kmem_type, >, ZSTD_KMEM_UNKNOWN);
 
 	type = z->kmem_type;
 	switch (type) {
@@ -1067,15 +1058,15 @@ zstd_mempool_deinit(void)
 	}
 	if (cctx_pool.count > 0)
 	{
-		XASSERT3U(cctx_pool.list, !=, NULL);
-		XASSERT3U(cctx_pool.listlocks, !=, NULL);
+		VERIFY3P(cctx_pool.list, !=, NULL);
+		VERIFY3P(cctx_pool.listlocks, !=, NULL);
 		kmem_free(cctx_pool.list, sizeof(void *) * cctx_pool.count);
 		kmem_free(cctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * cctx_pool.count);
 	}
 	else
 	{
-		XASSERT3U(cctx_pool.list, ==, NULL);
-		XASSERT3U(cctx_pool.listlocks, ==, NULL);
+		VERIFY3P(cctx_pool.list, ==, NULL);
+		VERIFY3P(cctx_pool.listlocks, ==, NULL);
 	}
 	cctx_pool.count = 0;
 	cctx_pool.list = NULL;
@@ -1098,15 +1089,15 @@ zstd_mempool_deinit(void)
 	}
 	if (dctx_pool.count > 0)
 	{
-		XASSERT3U(dctx_pool.list, !=, NULL);
-		XASSERT3U(dctx_pool.listlocks, !=, NULL);
+		VERIFY3P(dctx_pool.list, !=, NULL);
+		VERIFY3P(dctx_pool.listlocks, !=, NULL);
 		kmem_free(dctx_pool.list, sizeof(void *) * dctx_pool.count);
 		kmem_free(dctx_pool.listlocks, sizeof(cacheline_padded_kmutex_t) * dctx_pool.count);
 	}
 	else
 	{
-		XASSERT3U(dctx_pool.list, ==, NULL);
-		XASSERT3U(dctx_pool.listlocks, ==, NULL);
+		VERIFY3P(dctx_pool.list, ==, NULL);
+		VERIFY3P(dctx_pool.listlocks, ==, NULL);
 	}
 	dctx_pool.count = 0;
 	dctx_pool.list = NULL;
