@@ -360,6 +360,7 @@ zstd_mempool_free(struct zstd_kmem *z)
 #define CACHELINE_ALIGNMENT (64)
 // todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
 // todo: figure out why the padding appears to matter at all, since access to any inner lock is serialized on the outer lock anyway - perhaps not a contention issue so much as atomic access invalidating cache for all cores...?
+// todo: figure out a microbenchmark to show if this REALLY matters
 typedef union cacheline_padded_kmutex {
 	kmutex_t _mutex;
 	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
@@ -399,77 +400,33 @@ static void
 objpool_reap(objpool_t *objpool)
 {
 	mutex_enter(&objpool->outerlock);
-	int write_index = 0;
-	for (int read_index = 0; read_index < objpool->count; ++read_index)
+	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[read_index]))
+		if (!mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
 		{
-			objpool->obj_free(objpool->list[read_index]);
-			mutex_exit((kmutex_t *)&objpool->listlocks[read_index]);
-		}
-		else
-		{
-			// object still in use right now
-			aprint("ADAM: reap: idx#%d still locked (objpool \"%s\")\n", read_index, objpool->pool_name);
-			if (write_index < read_index) {
-				objpool->listlocks[write_index] =
-				    objpool->listlocks[read_index];
-				//mutex_init(&objpool->listlocks[read_index], NULL, MUTEX_DEFAULT, NULL);
-				objpool->list[write_index] =
-					objpool->list[read_index];
-				objpool->list[read_index] =
-				    (void*)0xdeadcafe; /* poison for debugging */
-			}
-			aprint("ADAM: reap: idx#%d of list compacted to new index#%d (objpool \"%s\")\n", read_index, write_index, objpool->pool_name);
-			write_index++;
+			// if ANY object is still alive then don't do anything
+			mutex_exit(&objpool->outerlock);
+			return;
 		}
 	}
-	if (write_index != objpool->count) // have shrunk
+	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (write_index == 0)
-		{
-			// no objects left, can free list structures
-			if (objpool->count > 0)
-			{
-				VERIFY3P(objpool->list, !=, NULL);
-				VERIFY3P(objpool->listlocks, !=, NULL);
-				kmem_free(objpool->list, sizeof(void *) * objpool->count);
-				kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
-			}
-			else
-			{
-				VERIFY3P(objpool->list, ==, NULL);
-				VERIFY3P(objpool->listlocks, ==, NULL);
-			}
-			objpool->list = NULL;
-			objpool->listlocks = NULL;
-			objpool->count = 0;
-		}
-		else
-		{
-			// live objects have been compacted to the start of the list,
-			// now truncate the list
-			ASSERT3S(write_index, <=, objpool->count);
-			void *new_listlocks = kmem_alloc(sizeof(cacheline_padded_kmutex_t) * write_index, KM_SLEEP);
-			if (new_listlocks)
-			{
-				void *new_list = kmem_alloc(sizeof(void *) * write_index, KM_SLEEP);
-				if (new_list)
-				{
-					memcpy(new_list, objpool->list, sizeof(void *) * write_index);
-					kmem_free(objpool->list, sizeof(void *) * objpool->count);
-					memcpy(new_listlocks, objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * write_index);
-					kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
-					objpool->listlocks = new_listlocks;
-					objpool->list = new_list;
-					objpool->count = write_index;
-				}
-				else
-				{
-					kmem_free(new_listlocks, sizeof(cacheline_padded_kmutex_t) * write_index);
-				}
-			}
-		}
+		objpool->obj_free(objpool->list[i]);
+	}
+	if (objpool->count > 0)
+	{
+		VERIFY3P(objpool->list, !=, NULL);
+		VERIFY3P(objpool->listlocks, !=, NULL);
+		kmem_free(objpool->list, sizeof(void *) * objpool->count);
+		kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
+		objpool->list = NULL;
+		objpool->listlocks = NULL;
+		objpool->count = 0;
+	}
+	else
+	{
+		VERIFY3P(objpool->list, ==, NULL);
+		VERIFY3P(objpool->listlocks, ==, NULL);
 	}
 	mutex_exit(&objpool->outerlock);
 }
