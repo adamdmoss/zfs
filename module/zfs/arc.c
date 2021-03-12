@@ -4855,7 +4855,7 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru->arcs_size) +
 	    zfs_refcount_count(&arc_mru_ghost->arcs_size) - arc_c;
-	XASSERT3U(target, >=, 0);
+	XASSERT3(target, >=, 0);
 
 	if (target > 0)
 	{
@@ -4879,7 +4879,7 @@ arc_evict(void)
 	 */
 	target = zfs_refcount_count(&arc_mru_ghost->arcs_size) +
 	    zfs_refcount_count(&arc_mfu_ghost->arcs_size) - arc_c;
-	XASSERT3U(target, >=, 0);
+	XASSERT3(target, >=, 0);
 
 	if (target > 0)
 	{
