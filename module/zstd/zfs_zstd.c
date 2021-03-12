@@ -380,7 +380,7 @@ typedef struct {
 
 static void objpool_init(objpool_t *objpool);
 static void objpool_reap(objpool_t *objpool);
-static void objpool_clear(objpool_t *objpool);
+static void objpool_destroy(objpool_t *objpool);
 
 static void* obj_grab(objpool_t *objpool);
 static void  obj_ungrab(objpool_t *objpool, void* obj);
@@ -389,11 +389,9 @@ static void
 objpool_init(objpool_t *objpool)
 {
 	mutex_init(&objpool->outerlock, NULL, MUTEX_DEFAULT, NULL);
-	mutex_enter(&objpool->outerlock);
 	objpool->count = 0;
 	objpool->list = NULL;
 	objpool->listlocks = NULL;
-	mutex_exit(&objpool->outerlock);
 }
 
 static void
@@ -402,9 +400,14 @@ objpool_reap(objpool_t *objpool)
 	mutex_enter(&objpool->outerlock);
 	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (!mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
+		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
 		{
-			// if ANY object is still alive then don't do anything
+			// object is not in use
+			mutex_exit((kmutex_t *)&objpool->listlocks[i]);
+		}
+		else
+		{
+			// if ANY object is still in use then don't do anything
 			mutex_exit(&objpool->outerlock);
 			return;
 		}
@@ -412,6 +415,7 @@ objpool_reap(objpool_t *objpool)
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		objpool->obj_free(objpool->list[i]);
+		mutex_destroy((kmutex_t *)&objpool->listlocks[i]);
 	}
 	if (objpool->count > 0)
 	{
@@ -421,21 +425,25 @@ objpool_reap(objpool_t *objpool)
 		kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
 		objpool->list = NULL;
 		objpool->listlocks = NULL;
-		objpool->count = 0;
 	}
 	else
 	{
 		VERIFY3P(objpool->list, ==, NULL);
 		VERIFY3P(objpool->listlocks, ==, NULL);
 	}
+	objpool->count = 0;
 	mutex_exit(&objpool->outerlock);
 }
 
 static void
-objpool_clear(objpool_t *objpool)
+objpool_destroy(objpool_t *objpool)
 {
 	objpool_reap(objpool);
-	ASSERT3U(objpool->count, ==, 0);
+	VERIFY3U(objpool->count, ==, 0);
+	if (objpool->count == 0)
+	{
+		mutex_destroy(&objpool->outerlock);
+	}
 }
 
 static void*
@@ -1017,8 +1025,8 @@ zstd_mempool_deinit(void)
 {
 	/* must release these object pools before releasing the mempools
 	    below, since these use the mempools */
-	objpool_clear(&cctx_pool);
-	objpool_clear(&dctx_pool);
+	objpool_destroy(&cctx_pool);
+	objpool_destroy(&dctx_pool);
 
 	for (int i = 0; i < ZSTD_POOL_MAX; i++) {
 		release_pool(&zstd_mempool_cctx[i]);
