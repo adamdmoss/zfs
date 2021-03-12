@@ -73,7 +73,12 @@ extern "C" {
 #define	zn_has_cached_data(zp)		((zp)->z_is_mapped)
 #define	zn_rlimit_fsize(zp, uio)	(0)
 
-/* zhold() wraps igrab() on Linux, and igrab() may fail when the inode is in the process of being deleted.  As zhold() must only be called when a ref already exists - so the inode cannot be mid-deletion - we VERIFY() this. */
+/*
+ * zhold() wraps igrab() on Linux, and igrab() may fail when the
+ * inode is in the process of being deleted.  As zhold() must only be
+ * called when a ref already exists - so the inode cannot be
+ * mid-deletion - we VERIFY() this.
+ */
 #define	zhold(zp)	VERIFY3P(igrab(ZTOI((zp))), !=, NULL)
 #define	zrele(zp)	iput(ZTOI((zp)))
 
