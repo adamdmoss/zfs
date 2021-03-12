@@ -50,6 +50,19 @@
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
 
+
+#if defined(__KERNEL__)
+#if 0
+extern	int printk(const char *fmt, ...);
+#define aprint printk
+#else
+#define aprint(...) do{}while(0)
+#endif
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+
+
 kstat_t *zstd_ksp = NULL;
 
 typedef struct zstd_stats {
@@ -342,6 +355,251 @@ zstd_mempool_free(struct zstd_kmem *z)
 	mutex_exit(&z->pool->barrier);
 }
 
+/////////////////////////////////////////// OBJECT POOLING UTILS
+////////////////////////////////////////////////////////////////
+#define CACHELINE_ALIGNMENT (64)
+// todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
+// todo: figure out why the padding appears to matter at all, since access to any inner lock is serialized on the outer lock anyway - perhaps not a contention issue so much as atomic access invalidating cache for all cores...?
+// todo: figure out a microbenchmark to show if this REALLY matters
+typedef union cacheline_padded_kmutex {
+	kmutex_t _mutex;
+	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
+} cacheline_padded_kmutex_t;
+
+typedef struct {
+	kmutex_t outerlock;
+	int count;
+	cacheline_padded_kmutex_t *listlocks;
+	void **list;
+
+	void*(*obj_alloc)(void);
+	void(*obj_free)(void*);
+	void(*obj_reset)(void*);
+	const char*const pool_name;
+} objpool_t;
+
+static void objpool_init(objpool_t *objpool);
+static void objpool_reap(objpool_t *objpool);
+static void objpool_destroy(objpool_t *objpool);
+
+static void* obj_grab(objpool_t *objpool);
+static void  obj_ungrab(objpool_t *objpool, void* obj);
+
+static void
+objpool_init(objpool_t *objpool)
+{
+	mutex_init(&objpool->outerlock, NULL, MUTEX_DEFAULT, NULL);
+	objpool->count = 0;
+	objpool->list = NULL;
+	objpool->listlocks = NULL;
+}
+
+static void
+objpool_reap(objpool_t *objpool)
+{
+	mutex_enter(&objpool->outerlock);
+	for (int i = 0; i < objpool->count; ++i)
+	{
+		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
+		{
+			// object is not in use
+			mutex_exit((kmutex_t *)&objpool->listlocks[i]);
+		}
+		else
+		{
+			// if ANY object is still in use then don't do anything
+			mutex_exit(&objpool->outerlock);
+			return;
+		}
+	}
+	for (int i = 0; i < objpool->count; ++i)
+	{
+		objpool->obj_free(objpool->list[i]);
+		mutex_destroy((kmutex_t *)&objpool->listlocks[i]);
+	}
+	if (objpool->count > 0)
+	{
+		VERIFY3P(objpool->list, !=, NULL);
+		VERIFY3P(objpool->listlocks, !=, NULL);
+		kmem_free(objpool->list, sizeof(void *) * objpool->count);
+		kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
+		objpool->list = NULL;
+		objpool->listlocks = NULL;
+	}
+	else
+	{
+		VERIFY3P(objpool->list, ==, NULL);
+		VERIFY3P(objpool->listlocks, ==, NULL);
+	}
+	objpool->count = 0;
+	mutex_exit(&objpool->outerlock);
+}
+
+static void
+objpool_destroy(objpool_t *objpool)
+{
+	objpool_reap(objpool);
+	VERIFY3U(objpool->count, ==, 0);
+	if (objpool->count == 0)
+	{
+		mutex_destroy(&objpool->outerlock);
+	}
+}
+
+static void*
+obj_grab(objpool_t *objpool)
+{
+	void* found = NULL;
+	mutex_enter(&objpool->outerlock);
+	const int threadpid = (int)getpid();
+	for (int i = 0; i < objpool->count; ++i)
+	{
+		int j = (i + threadpid) % objpool->count;
+		VERIFY3P(objpool->list[j], !=, NULL);
+		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
+		{
+			found = objpool->list[j];
+			break;
+		}
+	}
+	if (likely(found!=NULL))
+	{
+		// slightly subtle optimization; compressor needs to reset *stream* (only on error), we reset *parameters*
+		objpool->obj_reset(found);
+	}
+	else
+	{
+		//aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
+		int newlistbytes = sizeof(void *) * (objpool->count + 1);
+		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
+		if (likely(newlist!=NULL))
+		{
+			newlist[0] = objpool->obj_alloc();
+			if (likely(newlist[0]!=NULL))
+			{
+				int newlocklistbytes = sizeof(cacheline_padded_kmutex_t) * (objpool->count + 1);
+				cacheline_padded_kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
+				if (likely(newlocklist!=NULL))
+				{
+					mutex_init((kmutex_t *)&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					if (likely(objpool->count > 0))
+					{
+						VERIFY3P(objpool->list, !=, NULL);
+						VERIFY3P(objpool->listlocks, !=, NULL);
+						memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
+						memcpy(&newlocklist[1], &objpool->listlocks[0], sizeof(cacheline_padded_kmutex_t) * objpool->count);
+						kmem_free(objpool->list, sizeof(void *) * (objpool->count));
+						kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
+					}
+					else
+					{
+						VERIFY3P(objpool->list, ==, NULL);
+						VERIFY3P(objpool->listlocks, ==, NULL);
+					}
+					objpool->list = newlist;
+					objpool->listlocks = newlocklist;
+					found = objpool->list[0];
+					mutex_enter((kmutex_t *)&objpool->listlocks[0]);
+					++objpool->count;
+
+					// total success
+					//aprint("ADAM: expanded lists and grabbed new entry %p\n", found);
+				}
+				else
+				{
+					objpool->obj_free(newlist[0]);
+					kmem_free(newlist, newlistbytes);
+					aprint("ADAM: failed to alloc new locklist\n");
+				}
+			}
+			else
+			{
+				kmem_free(newlist, newlistbytes);
+				aprint("ADAM: failed to alloc new %s for list\n", objpool->pool_name);
+			}
+		}
+		else
+		{
+			aprint("ADAM: failed to alloc larger list\n");
+		}
+		//aprint("ADAM: resulting %s is %p\n", objpool->pool_name, found);
+	}
+	mutex_exit(&objpool->outerlock);
+	return found;
+}
+
+static void
+obj_ungrab(objpool_t *objpool, void* obj)
+{
+	VERIFY3P(obj, !=, NULL);
+	mutex_enter(&objpool->outerlock);
+	const int threadpid = (int)getpid();
+	for (int i = 0; i < objpool->count; ++i)
+	{
+		int j = (i + threadpid) % objpool->count;
+		if (objpool->list[j] == obj)
+		{
+			if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
+			{
+				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p in pool \"%s\", but should be locked already if it was grabbed\n", obj, objpool->pool_name);
+			}
+			mutex_exit((kmutex_t *)&objpool->listlocks[j]);
+			break;
+		}
+	}
+	mutex_exit(&objpool->outerlock);
+}
+
+/////////////////////////////////////////// OBJECT POOLS
+////////////////////////////////////////////////////////
+
+static void *
+cctx_alloc(void)
+{
+	return ZSTD_createCCtx_advanced(zstd_malloc);
+}
+static void
+cctx_free(void *ptr)
+{
+	ZSTD_freeCCtx(ptr);
+}
+static void
+cctx_reset(void *ptr)
+{
+	ZSTD_CCtx_reset(ptr, ZSTD_reset_parameters);
+}
+
+static void *
+dctx_alloc(void)
+{
+	return ZSTD_createDCtx_advanced(zstd_dctx_malloc);
+}
+static void
+dctx_free(void *ptr)
+{
+	ZSTD_freeDCtx(ptr);
+}
+static void
+dctx_reset(void *ptr)
+{
+	ZSTD_DCtx_reset(ptr, ZSTD_reset_parameters);
+}
+
+static objpool_t cctx_pool = {
+	.obj_alloc = cctx_alloc,
+	.obj_free = cctx_free,
+	.obj_reset = cctx_reset,
+	.pool_name = "zstdcctx"
+	};
+
+static objpool_t dctx_pool = {
+	.obj_alloc = dctx_alloc,
+	.obj_free = dctx_free,
+	.obj_reset = dctx_reset,
+	.pool_name = "zstddctx"
+	};
+
+
 /* Convert ZFS internal enum to ZSTD level */
 static int
 zstd_enum_to_level(enum zio_zstd_levels level, int16_t *zstd_level)
@@ -383,7 +641,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
 
-	cctx = ZSTD_createCCtx_advanced(zstd_malloc);
+	cctx = obj_grab(&cctx_pool);
 
 	/*
 	 * Out of kernel memory, gently fall through - this will disable
@@ -407,12 +665,66 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	c_len = ZSTD_compress2(cctx,
-	    hdr->data,
-	    d_len - sizeof (*hdr),
-	    s_start, s_len);
+	const size_t MAXGULP = 4096;
+	size_t src_remain = s_len;
+	char* src_ptr = s_start;
+	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
+	{
 
-	ZSTD_freeCCtx(cctx);
+		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
+		for(;;)
+		{
+			int is_final_gulp = 0;
+			size_t this_gulp_size = MAXGULP;
+			if (src_remain <= this_gulp_size)
+			{
+				this_gulp_size = src_remain;
+				is_final_gulp = 1;
+			}
+			VERIFY3S(src_remain, >, 0);
+			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
+			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
+			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
+			if (ZSTD_isError(status))
+			{
+				compressedSize = status;
+				aprint("status was error: %s\n", ZSTD_getErrorName(status));
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				goto badc;
+			}
+			if (outBuff.pos == outBuff.size)
+			{
+				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				//aprint("done(output full, input remains); outpos==outsize");
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				goto badc; // ?
+			}
+			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
+			src_ptr += thisInBuff.pos;
+			VERIFY3U(src_remain, >=, thisInBuff.pos);
+			src_remain -= thisInBuff.pos;
+			if (src_remain == 0)
+			{
+				// totally done
+				break;
+			}
+#ifdef __KERNEL__
+			//kpreempt();
+#else
+#endif
+			cond_resched(); // possibly yield before taking next gulp
+		}
+
+		compressedSize = outBuff.pos;
+	}
+badc:
+
+	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	c_len = compressedSize;
+
+	obj_ungrab(&cctx_pool, cctx);
 
 	/* Error in the compression routine, disable compression. */
 	if (ZSTD_isError(c_len)) {
@@ -421,8 +733,14 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		 * too small, that is not a failure. Everything else is a
 		 * failure, so increment the compression failure counter.
 		 */
-		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall) {
+		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall)
+		{
+			aprint("ERROR status... ending\n");
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
+		}
+		else
+		{
+			//aprint("(dest was too small?)... ending");
 		}
 		return (s_len);
 	}
@@ -511,7 +829,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	dctx = ZSTD_createDCtx_advanced(zstd_dctx_malloc);
+	dctx = obj_grab(&dctx_pool);
 	if (!dctx) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
 		return (1);
@@ -522,7 +840,6 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 
 	/* Decompress the data and release the context */
 	result = ZSTD_decompressDCtx(dctx, d_start, d_len, hdr->data, c_len);
-	ZSTD_freeDCtx(dctx);
 
 	/*
 	 * Returns 0 on success (decompression function returned non-negative)
@@ -530,8 +847,12 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	 */
 	if (ZSTD_isError(result)) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_fail);
+		ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+		obj_ungrab(&dctx_pool, dctx);
 		return (1);
 	}
+
+	obj_ungrab(&dctx_pool, dctx);
 
 	if (level) {
 		*level = hdr_copy.level;
@@ -654,6 +975,10 @@ create_fallback_mem(struct zstd_fallback_mem *mem, size_t size)
 static void __init
 zstd_mempool_init(void)
 {
+	objpool_init(&cctx_pool);
+	objpool_init(&dctx_pool);
+
+	// OTHER STUFF...
 	zstd_mempool_cctx = (struct zstd_pool *)
 	    kmem_zalloc(ZSTD_POOL_MAX * sizeof (struct zstd_pool), KM_SLEEP);
 	zstd_mempool_dctx = (struct zstd_pool *)
@@ -698,6 +1023,11 @@ release_pool(struct zstd_pool *pool)
 static void __exit
 zstd_mempool_deinit(void)
 {
+	/* must release these object pools before releasing the mempools
+	    below, since these use the mempools */
+	objpool_destroy(&cctx_pool);
+	objpool_destroy(&dctx_pool);
+
 	for (int i = 0; i < ZSTD_POOL_MAX; i++) {
 		release_pool(&zstd_mempool_cctx[i]);
 		release_pool(&zstd_mempool_dctx[i]);
@@ -714,6 +1044,8 @@ zstd_mempool_deinit(void)
 void
 zfs_zstd_cache_reap_now(void)
 {
+	objpool_reap(&cctx_pool);
+	objpool_reap(&dctx_pool);
 	/*
 	 * calling alloc with zero size seeks
 	 * and releases old unused objects
