@@ -361,10 +361,42 @@ zstd_mempool_free(struct zstd_kmem *z)
 // todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
 // todo: figure out why the padding appears to matter at all, since access to any inner lock is serialized on the outer lock anyway - perhaps not a contention issue so much as atomic access invalidating cache for all cores...?
 // todo: figure out a microbenchmark to show if this REALLY matters
+
+#define GRABAMP 20000
+#if 0
+#define SLOTLOCK(L) mutex_enter((kmutex_t *)(L))
+#define SLOTTRYLOCK(L) mutex_tryenter((kmutex_t *)(L))
+#define SLOTUNLOCK(L) mutex_exit((kmutex_t *)(L))
+#define SLOTISLOCKED(L) (SLOTTRYLOCK(L) ? ({SLOTUNLOCK(L);0; }) : (1))
+#define SLOTINIT(L) mutex_init(((kmutex_t *)(L)), NULL, MUTEX_DEFAULT, NULL)
+#define SLOTDESTROY(L) mutex_destroy((kmutex_t *)(L))
 typedef union cacheline_padded_kmutex {
 	kmutex_t _mutex;
 	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
 } cacheline_padded_kmutex_t;
+#else
+# if 0
+#define SLOTTRYLOCK(L) (!atomic_cas_32(&(L)->x,0,1))
+#define SLOTLOCK(L) while(!SLOTTRYLOCK(L)){}
+#define SLOTUNLOCK(L) atomic_dec_32(&(L)->x)
+#define SLOTISLOCKED(L) ((L)->x != 0)
+#define SLOTINIT(L) ((L)->x = 0)
+#define SLOTDESTROY(L) /**/
+# else
+#define SLOTTRYLOCK(L) (((L)->x == 0) ? ((L)->x = 1) : 0)
+#define SLOTLOCK(L) while(!SLOTTRYLOCK(L)){}
+#define SLOTUNLOCK(L) ((L)->x = 0)
+#define SLOTISLOCKED(L) ((L)->x != 0)
+#define SLOTINIT(L) ((L)->x = 0)
+#define SLOTDESTROY(L) /**/
+# endif
+typedef union cacheline_padded_kmutex
+{
+	//kmutex_t _mutex;
+	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
+	uint32_t x;
+} cacheline_padded_kmutex_t;
+#endif
 
 typedef struct {
 	kmutex_t outerlock;
@@ -393,14 +425,6 @@ objpool_init(objpool_t *objpool)
 	objpool->list = NULL;
 	objpool->listlocks = NULL;
 }
-
-#define GRABAMP 20000
-#define SLOTLOCK(L) mutex_enter((kmutex_t*)(L))
-#define SLOTTRYLOCK(L) mutex_tryenter((kmutex_t*)(L))
-#define SLOTUNLOCK(L) mutex_exit((kmutex_t*)(L))
-#define SLOTISLOCKED(L) (SLOTTRYLOCK(L) ? ({SLOTUNLOCK(L);0;}) : (1))
-#define SLOTINIT(L) mutex_init(((kmutex_t*)(L)), NULL, MUTEX_DEFAULT, NULL)
-#define SLOTDESTROY(L) mutex_destroy((kmutex_t*)(L))
 
 static void
 objpool_reap(objpool_t *objpool)
