@@ -394,18 +394,21 @@ objpool_init(objpool_t *objpool)
 	objpool->listlocks = NULL;
 }
 
+#define GRABAMP 20000
+#define SLOTLOCK(L) mutex_enter((kmutex_t*)(L))
+#define SLOTTRYLOCK(L) mutex_tryenter((kmutex_t*)(L))
+#define SLOTUNLOCK(L) mutex_exit((kmutex_t*)(L))
+#define SLOTISLOCKED(L) (SLOTTRYLOCK(L) ? ({SLOTUNLOCK(L);0;}) : (1))
+#define SLOTINIT(L) mutex_init(((kmutex_t*)(L)), NULL, MUTEX_DEFAULT, NULL)
+#define SLOTDESTROY(L) mutex_destroy((kmutex_t*)(L))
+
 static void
 objpool_reap(objpool_t *objpool)
 {
 	mutex_enter(&objpool->outerlock);
 	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
-		{
-			// object is not in use
-			mutex_exit((kmutex_t *)&objpool->listlocks[i]);
-		}
-		else
+		if (SLOTISLOCKED(&objpool->listlocks[i]))
 		{
 			// if ANY object is still in use then don't do anything
 			mutex_exit(&objpool->outerlock);
@@ -415,7 +418,7 @@ objpool_reap(objpool_t *objpool)
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		objpool->obj_free(objpool->list[i]);
-		mutex_destroy((kmutex_t *)&objpool->listlocks[i]);
+		SLOTDESTROY(&objpool->listlocks[i]);
 	}
 	if (objpool->count > 0)
 	{
@@ -456,7 +459,7 @@ obj_grab(objpool_t *objpool)
 	{
 		int j = (i + threadpid) % objpool->count;
 		VERIFY3P(objpool->list[j], !=, NULL);
-		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
+		if (SLOTTRYLOCK(&objpool->listlocks[j]))
 		{
 			found = objpool->list[j];
 			break;
@@ -481,7 +484,7 @@ obj_grab(objpool_t *objpool)
 				cacheline_padded_kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
 				if (likely(newlocklist!=NULL))
 				{
-					mutex_init((kmutex_t *)&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
+					SLOTINIT(&newlocklist[0]);
 					if (likely(objpool->count > 0))
 					{
 						VERIFY3P(objpool->list, !=, NULL);
@@ -499,7 +502,7 @@ obj_grab(objpool_t *objpool)
 					objpool->list = newlist;
 					objpool->listlocks = newlocklist;
 					found = objpool->list[0];
-					mutex_enter((kmutex_t *)&objpool->listlocks[0]);
+					SLOTLOCK(&objpool->listlocks[0]);
 					++objpool->count;
 
 					// total success
@@ -539,11 +542,11 @@ obj_ungrab(objpool_t *objpool, void* obj)
 		int j = (i + threadpid) % objpool->count;
 		if (objpool->list[j] == obj)
 		{
-			if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
+			if (SLOTTRYLOCK(&objpool->listlocks[j]))
 			{
 				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p in pool \"%s\", but should be locked already if it was grabbed\n", obj, objpool->pool_name);
 			}
-			mutex_exit((kmutex_t *)&objpool->listlocks[j]);
+			SLOTUNLOCK(&objpool->listlocks[j]);
 			break;
 		}
 	}
@@ -640,7 +643,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, >=, sizeof (*hdr));
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
-#define GRABAMP 100000
 	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&cctx_pool); if(foo) obj_ungrab(&cctx_pool, foo);}
 	cctx = obj_grab(&cctx_pool);
 
