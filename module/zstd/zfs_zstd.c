@@ -357,18 +357,16 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define GRABAMP 0*10000
-# if 0
-#define SLOTTRYLOCK(L) (!atomic_cas_32(&(L)->x,0,1))
-#define SLOTLOCK(L) while(!SLOTTRYLOCK(L)){}
-#define SLOTUNLOCK(L) atomic_dec_32(&(L)->x)
-#define SLOTISLOCKED(L) ((L)->x != 0)
-#define SLOTINIT(L) ((L)->x = 0)
-#define SLOTDESTROY(L) /**/
-# endif
+#define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
+#define ZSPINLOCK_TRYLOCK(L) (!atomic_cas_32((L), 0U, 1U))
+#define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
+#define ZSPINLOCK_UNLOCK(L) atomic_dec_32(L)
+#define ZSPINLOCK_INIT(L) (*(L) = 0)
+#define ZSPINLOCK_DESTROY(L) /* don't need to do anything for this */
+typedef uint32_t zyieldingspinlock_t;
 
 typedef struct {
-	kmutex_t listlock;
+	zyieldingspinlock_t listlock;
 	int count;
 	void **list;
 
@@ -388,7 +386,8 @@ static void  obj_ungrab(objpool_t *objpool, void* obj);
 static void
 objpool_init(objpool_t *objpool)
 {
-	mutex_init(&objpool->listlock, NULL, MUTEX_DEFAULT, NULL);
+	ZSPINLOCK_INIT(&objpool->listlock);
+
 	objpool->count = 0;
 	objpool->list = NULL;
 }
@@ -396,13 +395,13 @@ objpool_init(objpool_t *objpool)
 static void
 objpool_reap(objpool_t *objpool)
 {
-	mutex_enter(&objpool->listlock);
+	ZSPINLOCK_LOCK(&objpool->listlock);
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		if (NULL == objpool->list[i])
 		{
 			// if ANY object is still in use then don't do anything
-			mutex_exit(&objpool->listlock);
+			ZSPINLOCK_UNLOCK(&objpool->listlock);
 			return;
 		}
 	}
@@ -421,7 +420,7 @@ objpool_reap(objpool_t *objpool)
 		VERIFY3P(objpool->list, ==, NULL);
 	}
 	objpool->count = 0;
-	mutex_exit(&objpool->listlock);
+	ZSPINLOCK_UNLOCK(&objpool->listlock);
 }
 
 static void
@@ -431,7 +430,7 @@ objpool_destroy(objpool_t *objpool)
 	VERIFY3U(objpool->count, ==, 0);
 	if (objpool->count == 0)
 	{
-		mutex_destroy(&objpool->listlock);
+		ZSPINLOCK_DESTROY(&objpool->listlock);
 	}
 }
 
@@ -439,7 +438,7 @@ static void*
 obj_grab(objpool_t *objpool)
 {
 	void* found = NULL;
-	mutex_enter(&objpool->listlock);
+	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < objpool->count; ++i)
 	{
@@ -493,7 +492,7 @@ obj_grab(objpool_t *objpool)
 		}
 		//aprint("ADAM: resulting %s is %p\n", objpool->pool_name, found);
 	}
-	mutex_exit(&objpool->listlock);
+	ZSPINLOCK_UNLOCK(&objpool->listlock);
 	return found;
 }
 
@@ -501,7 +500,7 @@ static void
 obj_ungrab(objpool_t *objpool, void* obj)
 {
 	VERIFY3P(obj, !=, NULL);
-	mutex_enter(&objpool->listlock);
+	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < objpool->count; ++i)
 	{
@@ -512,7 +511,7 @@ obj_ungrab(objpool_t *objpool, void* obj)
 			break;
 		}
 	}
-	mutex_exit(&objpool->listlock);
+	ZSPINLOCK_UNLOCK(&objpool->listlock);
 }
 
 /////////////////////////////////////////// OBJECT POOLS
