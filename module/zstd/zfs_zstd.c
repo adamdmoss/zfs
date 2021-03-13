@@ -357,19 +357,19 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define CACHELINE_ALIGNMENT (64)
-// todo: ideally these would be allocated as aligned as well as padded to alignment, but the kmem_alloc interface makes that deeply annoying.  until they are, there's a smallish chance that mutexes will span two cache lines; that's still better than a bunch of mutexes all sharing the same cache line for different cores to fight over.
-// todo: figure out why the padding appears to matter at all, since access to any inner lock is serialized on the outer lock anyway - perhaps not a contention issue so much as atomic access invalidating cache for all cores...?
-// todo: figure out a microbenchmark to show if this REALLY matters
-typedef union cacheline_padded_kmutex {
-	kmutex_t _mutex;
-	uchar_t _force_cacheline_pad[CACHELINE_ALIGNMENT];
-} cacheline_padded_kmutex_t;
+#define GRABAMP 0*10000
+# if 0
+#define SLOTTRYLOCK(L) (!atomic_cas_32(&(L)->x,0,1))
+#define SLOTLOCK(L) while(!SLOTTRYLOCK(L)){}
+#define SLOTUNLOCK(L) atomic_dec_32(&(L)->x)
+#define SLOTISLOCKED(L) ((L)->x != 0)
+#define SLOTINIT(L) ((L)->x = 0)
+#define SLOTDESTROY(L) /**/
+# endif
 
 typedef struct {
-	kmutex_t outerlock;
+	kmutex_t listlock;
 	int count;
-	cacheline_padded_kmutex_t *listlocks;
 	void **list;
 
 	void*(*obj_alloc)(void);
@@ -388,51 +388,40 @@ static void  obj_ungrab(objpool_t *objpool, void* obj);
 static void
 objpool_init(objpool_t *objpool)
 {
-	mutex_init(&objpool->outerlock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&objpool->listlock, NULL, MUTEX_DEFAULT, NULL);
 	objpool->count = 0;
 	objpool->list = NULL;
-	objpool->listlocks = NULL;
 }
 
 static void
 objpool_reap(objpool_t *objpool)
 {
-	mutex_enter(&objpool->outerlock);
+	mutex_enter(&objpool->listlock);
 	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[i]))
-		{
-			// object is not in use
-			mutex_exit((kmutex_t *)&objpool->listlocks[i]);
-		}
-		else
+		if (NULL == objpool->list[i])
 		{
 			// if ANY object is still in use then don't do anything
-			mutex_exit(&objpool->outerlock);
+			mutex_exit(&objpool->listlock);
 			return;
 		}
 	}
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		objpool->obj_free(objpool->list[i]);
-		mutex_destroy((kmutex_t *)&objpool->listlocks[i]);
 	}
 	if (objpool->count > 0)
 	{
 		VERIFY3P(objpool->list, !=, NULL);
-		VERIFY3P(objpool->listlocks, !=, NULL);
 		kmem_free(objpool->list, sizeof(void *) * objpool->count);
-		kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
 		objpool->list = NULL;
-		objpool->listlocks = NULL;
 	}
 	else
 	{
 		VERIFY3P(objpool->list, ==, NULL);
-		VERIFY3P(objpool->listlocks, ==, NULL);
 	}
 	objpool->count = 0;
-	mutex_exit(&objpool->outerlock);
+	mutex_exit(&objpool->listlock);
 }
 
 static void
@@ -442,7 +431,7 @@ objpool_destroy(objpool_t *objpool)
 	VERIFY3U(objpool->count, ==, 0);
 	if (objpool->count == 0)
 	{
-		mutex_destroy(&objpool->outerlock);
+		mutex_destroy(&objpool->listlock);
 	}
 }
 
@@ -450,15 +439,14 @@ static void*
 obj_grab(objpool_t *objpool)
 {
 	void* found = NULL;
-	mutex_enter(&objpool->outerlock);
+	mutex_enter(&objpool->listlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		int j = (i + threadpid) % objpool->count;
-		VERIFY3P(objpool->list[j], !=, NULL);
-		if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
+		if ((found = objpool->list[j]) != NULL)
 		{
-			found = objpool->list[j];
+			objpool->list[j] = NULL;
 			break;
 		}
 	}
@@ -474,43 +462,24 @@ obj_grab(objpool_t *objpool)
 		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
 		if (likely(newlist!=NULL))
 		{
-			newlist[0] = objpool->obj_alloc();
-			if (likely(newlist[0]!=NULL))
+			found = objpool->obj_alloc();
+			if (likely(found!=NULL))
 			{
-				int newlocklistbytes = sizeof(cacheline_padded_kmutex_t) * (objpool->count + 1);
-				cacheline_padded_kmutex_t *newlocklist = kmem_alloc(newlocklistbytes, KM_SLEEP);
-				if (likely(newlocklist!=NULL))
+				newlist[0] = NULL;
+				if (likely(objpool->count > 0))
 				{
-					mutex_init((kmutex_t *)&newlocklist[0], NULL, MUTEX_DEFAULT, NULL);
-					if (likely(objpool->count > 0))
-					{
-						VERIFY3P(objpool->list, !=, NULL);
-						VERIFY3P(objpool->listlocks, !=, NULL);
-						memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
-						memcpy(&newlocklist[1], &objpool->listlocks[0], sizeof(cacheline_padded_kmutex_t) * objpool->count);
-						kmem_free(objpool->list, sizeof(void *) * (objpool->count));
-						kmem_free(objpool->listlocks, sizeof(cacheline_padded_kmutex_t) * objpool->count);
-					}
-					else
-					{
-						VERIFY3P(objpool->list, ==, NULL);
-						VERIFY3P(objpool->listlocks, ==, NULL);
-					}
-					objpool->list = newlist;
-					objpool->listlocks = newlocklist;
-					found = objpool->list[0];
-					mutex_enter((kmutex_t *)&objpool->listlocks[0]);
-					++objpool->count;
-
-					// total success
-					//aprint("ADAM: expanded lists and grabbed new entry %p\n", found);
+					VERIFY3P(objpool->list, !=, NULL);
+					memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
+					kmem_free(objpool->list, sizeof(void *) * (objpool->count));
 				}
 				else
 				{
-					objpool->obj_free(newlist[0]);
-					kmem_free(newlist, newlistbytes);
-					aprint("ADAM: failed to alloc new locklist\n");
+					VERIFY3P(objpool->list, ==, NULL);
 				}
+				objpool->list = newlist;
+				++objpool->count;
+				// total success
+				//aprint("ADAM: expanded lists and grabbed new entry %p\n", found);
 			}
 			else
 			{
@@ -524,7 +493,7 @@ obj_grab(objpool_t *objpool)
 		}
 		//aprint("ADAM: resulting %s is %p\n", objpool->pool_name, found);
 	}
-	mutex_exit(&objpool->outerlock);
+	mutex_exit(&objpool->listlock);
 	return found;
 }
 
@@ -532,22 +501,18 @@ static void
 obj_ungrab(objpool_t *objpool, void* obj)
 {
 	VERIFY3P(obj, !=, NULL);
-	mutex_enter(&objpool->outerlock);
+	mutex_enter(&objpool->listlock);
 	const int threadpid = (int)getpid();
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		int j = (i + threadpid) % objpool->count;
-		if (objpool->list[j] == obj)
+		if (objpool->list[j] == NULL)
 		{
-			if (mutex_tryenter((kmutex_t *)&objpool->listlocks[j]))
-			{
-				aprint("ADAM: uhh damn, managed to get lock on ungrab ptr %p in pool \"%s\", but should be locked already if it was grabbed\n", obj, objpool->pool_name);
-			}
-			mutex_exit((kmutex_t *)&objpool->listlocks[j]);
+			objpool->list[j] = obj;
 			break;
 		}
 	}
-	mutex_exit(&objpool->outerlock);
+	mutex_exit(&objpool->listlock);
 }
 
 /////////////////////////////////////////// OBJECT POOLS
@@ -640,7 +605,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, >=, sizeof (*hdr));
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
-
+	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&cctx_pool); if(foo) obj_ungrab(&cctx_pool, foo);}
 	cctx = obj_grab(&cctx_pool);
 
 	/*
@@ -829,6 +794,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
+	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&dctx_pool); if(foo) obj_ungrab(&dctx_pool, foo);}
 	dctx = obj_grab(&dctx_pool);
 	if (!dctx) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
