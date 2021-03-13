@@ -1,0 +1,1 @@
+../buildzfs &&sudo ./scripts/zfs.sh -vu&&sudo ./scripts/zfs.sh -v&&sudo ./bin/zpool import -a
