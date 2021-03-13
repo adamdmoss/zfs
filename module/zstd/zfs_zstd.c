@@ -640,7 +640,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, >=, sizeof (*hdr));
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
-
+#define GRABAMP 100000
+	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&cctx_pool); if(foo) obj_ungrab(&cctx_pool, foo);}
 	cctx = obj_grab(&cctx_pool);
 
 	/*
@@ -829,6 +830,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
+	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&dctx_pool); if(foo) obj_ungrab(&dctx_pool, foo);}
 	dctx = obj_grab(&dctx_pool);
 	if (!dctx) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
