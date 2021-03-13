@@ -68,7 +68,7 @@ extern	int printk(const char *fmt, ...);
 #else
 #define aprint(...) printf(__VA_ARGS__)
 #endif
-#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed\n", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
 
 enum {
 	TOKEN_RO,
@@ -1193,6 +1193,7 @@ zfs_root(zfsvfs_t *zfsvfs, struct inode **ipp)
  * to the end of the z_all_znodes list.  New znodes are inserted at the
  * end of the list so we're always scanning the oldest znodes first.
  */
+static int64_t prunerecursion = 0;
 static int
 zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 {
@@ -1201,18 +1202,17 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int objects = 0;
 	int i = 0, j = 0;
 
-	static int recursion = 0;
 	{
-		XASSERT3(recursion, ==, 0);
+		XASSERT3(prunerecursion, ==, 0);
 
 		static int done = 0;
 		if (!done)
 		{
 			done = 1;
-			aprint("ADAM: HUZZAH, we're using zfs_prune_aliases");
+			aprint("ADAM: HUZZAH, we're using zfs_prune_aliases\n");
 		}
 	}
-	recursion++;
+	atomic_inc_64(&prunerecursion);
 
 	zp_array = kmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
 
@@ -1241,7 +1241,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		if (unlikely(igrab(ZTOI(zp)) == NULL))
 		{
 			mutex_exit(&zp->z_lock);
-			aprint("prune: skipping znode already being freed");
+			aprint("prune: skipping znode already being freed\n");
 			continue;
 		}
 
@@ -1266,7 +1266,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 
 	kmem_free(zp_array, max_array * sizeof (znode_t *));
 
-	recursion--;
+	atomic_dec_64(&prunerecursion);
 	return (objects);
 }
 
