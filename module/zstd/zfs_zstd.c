@@ -358,6 +358,7 @@ zstd_mempool_free(struct zstd_kmem *z)
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
 #define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
+#define OBJPOOL_TIMEOUT_SEC 5
 #define ZSPINLOCK_TRYLOCK(L) (!atomic_cas_32((L), 0U, 1U))
 #define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
 #define ZSPINLOCK_UNLOCK(L) atomic_dec_32(L)
@@ -369,6 +370,8 @@ typedef struct {
 	zyieldingspinlock_t listlock;
 	int count;
 	void **list;
+
+	int64_t last_accessed_jiffy; /* for idle-reap */
 
 	void*(*obj_alloc)(void);
 	void(*obj_free)(void*);
@@ -384,16 +387,24 @@ static void* obj_grab(objpool_t *objpool);
 static void  obj_ungrab(objpool_t *objpool, void* obj);
 
 static void
+objpool_reset_idle_timer(objpool_t *objpool)
+{
+	const int64_t now_jiffy = ddi_get_lbolt64();
+	objpool->last_accessed_jiffy = now_jiffy;
+}
+
+static void
 objpool_init(objpool_t *objpool)
 {
 	ZSPINLOCK_INIT(&objpool->listlock);
 
 	objpool->count = 0;
 	objpool->list = NULL;
+	objpool_reset_idle_timer(objpool);
 }
 
 static void
-objpool_reap(objpool_t *objpool)
+objpool_clearunused(objpool_t *objpool)
 {
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	for (int i = 0; i < objpool->count; ++i)
@@ -421,12 +432,26 @@ objpool_reap(objpool_t *objpool)
 	}
 	objpool->count = 0;
 	ZSPINLOCK_UNLOCK(&objpool->listlock);
+	objpool_reset_idle_timer(objpool);
+}
+
+static void
+objpool_reap(objpool_t *objpool)
+{
+	int64_t now_jiffy = ddi_get_lbolt64();
+	if (objpool->last_accessed_jiffy > now_jiffy /*wrap*/
+	    || now_jiffy - objpool->last_accessed_jiffy
+		    > SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC))
+	{
+		aprint("idle-reap for pool \"%s\"", objpool->pool_name);
+		objpool_clearunused(objpool);
+	}
 }
 
 static void
 objpool_destroy(objpool_t *objpool)
 {
-	objpool_reap(objpool);
+	objpool_clearunused(objpool);
 	VERIFY3U(objpool->count, ==, 0);
 	if (objpool->count == 0)
 	{
@@ -512,6 +537,7 @@ obj_ungrab(objpool_t *objpool, void* obj)
 		}
 	}
 	ZSPINLOCK_UNLOCK(&objpool->listlock);
+	objpool_reset_idle_timer(objpool);
 }
 
 /////////////////////////////////////////// OBJECT POOLS
