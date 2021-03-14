@@ -658,8 +658,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	const size_t MAX_INPUT_GULP = 4095;
-	const size_t MAX_OUTPUT_GULP = 3333;
+	const size_t MAX_INPUT_GULP = 1;//4095;
+	const size_t MAX_OUTPUT_GULP = 1;//3333;
 	size_t src_remain = s_len;
 	const size_t dest_size = d_len - sizeof(*hdr);
 	char *src_ptr = s_start;
@@ -751,13 +751,26 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 					else
 					{
 						endtype = ZSTD_e_end;
-						aprint("no input remaining, don't need more write-space, going around again to write epilogue I guess (compressedsize=%ld)\n", compressedSize);
+						aprint("no input remaining, don't need more write-space, going around again to flush + write epilogue I guess (compressedsize=%ld)\n", compressedSize);
+						continue;
 					}
 				}
 				else
 				{
-					aprint("input consumed but still need more output space... (%ld internal bytes to drain)\n", status);
+					if (endtype == ZSTD_e_end)
+					{
+						aprint("still need more space for flush+epilogue... (%ld internal bytes to drain)\n", status);
+						continue;
+					}
+					else
+					{
+						aprint("input consumed but still need more output space... (%ld internal bytes to drain)\n", status);
+					}
 				}
+			}
+			else
+			{
+				VERIFY(endtype != ZSTD_e_end);
 			}
 #ifdef __KERNEL__
 			//kpreempt();
