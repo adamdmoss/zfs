@@ -358,7 +358,7 @@ zstd_mempool_free(struct zstd_kmem *z)
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
 #define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
-#define OBJPOOL_TIMEOUT_SEC 5
+#define OBJPOOL_TIMEOUT_SEC 15
 #define ZSPINLOCK_TRYLOCK(L) (!atomic_cas_32((L), 0U, 1U))
 #define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
 #define ZSPINLOCK_UNLOCK(L) atomic_dec_32(L)
