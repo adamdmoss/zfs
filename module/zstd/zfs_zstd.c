@@ -54,6 +54,8 @@
 #if defined(__KERNEL__)
 #if 0
 extern	int printk(const char *fmt, ...);
+#undef VERIFY
+#define VERIFY(B) do{const int lll = (int)(B); if (unlikely(!lll)) aprint("ADAM ASSERT FAILURE: %s:%s():%d \"%s\" failed", __FILE__, __FUNCTION__, __LINE__, #B); }while(0)
 #define aprint printk
 #else
 #define aprint(...) do{}while(0)
@@ -656,42 +658,42 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	const size_t MAX_INPUT_GULP = 1;//4095;
+	const size_t MAX_INPUT_GULP = 4095;
 	const size_t MAX_OUTPUT_GULP = 3333;
 	size_t src_remain = s_len;
-	size_t dest_remain = d_len - sizeof(*hdr);
+	const size_t dest_size = d_len - sizeof(*hdr);
 	char *src_ptr = s_start;
-	char *dest_ptr = hdr->data;
-	aprint("starting new record... (src_remain=%ld dest_remain=%ld)\n", src_remain, dest_remain);
+	aprint("starting new record... (src_remain=%ld dest_size=%ld)\n", src_remain, dest_size);
 	size_t compressedSize = 0;// /*hack*/ (size_t)-ZSTD_error_GENERIC;
 	int need_more_writespace = 0;
 	{
+		ZSTD_EndDirective endtype = ZSTD_e_continue;
+		ZSTD_outBuffer outBuff = {hdr->data, 0/*will be raised*/, 0};
 		for(;;)
 		{
-			int is_final_input_gulp = 0;
+			if (need_more_writespace)
+			{
+				outBuff.size += MAX_OUTPUT_GULP;
+			}
+
 			int is_final_output_gulp = 0;
-			//int gotta_continue = 1;
-			size_t this_output_gulp_size = MAX_OUTPUT_GULP;
+			if (outBuff.size >= dest_size)
+			{
+				outBuff.size = dest_size;
+				is_final_output_gulp = 1;
+			}
+
+			int is_final_input_gulp = 0;
 			size_t this_input_gulp_size = MAX_INPUT_GULP;
 			if (src_remain <= this_input_gulp_size)
 			{
 				this_input_gulp_size = src_remain;
 				is_final_input_gulp = 1;
 			}
-			if (dest_remain <= this_output_gulp_size)
-			{
-				this_output_gulp_size = dest_remain;
-				is_final_output_gulp = 1;
-			}
-			//gotta_continue = (need_more_writespace || !is_final_input_gulp);
-			ZSTD_EndDirective endtype = ZSTD_e_continue;
-			if (need_more_writespace) endtype = ZSTD_e_flush;
-			else if (is_final_input_gulp) endtype = ZSTD_e_end;
-			aprint("gulp: ingulpsize=%ld, outgulpsize=%ld, src_remain=%ld, dest_remain=%ld, ENDTYPE->%d\n",
-			this_input_gulp_size, this_output_gulp_size, src_remain, dest_remain, (int)endtype);
-			VERIFY(src_remain > 0 || dest_remain > 0);
-			VERIFY(this_input_gulp_size > 0 || this_output_gulp_size > 0);
-			ZSTD_outBuffer outBuff = {dest_ptr, this_output_gulp_size, 0};
+			(void)is_final_input_gulp;
+			
+			aprint("gulp: ingulpsize=%ld, outsize=%ld/%ld, src_remain=%ld, ENDTYPE->%d\n",	this_input_gulp_size, outBuff.size, dest_size, src_remain, (int)endtype);
+
 			ZSTD_inBuffer inBuff = {src_ptr, this_input_gulp_size, 0};
 
 			size_t status = ZSTD_compressStream2(cctx, &outBuff, &inBuff, endtype);
@@ -717,8 +719,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				goto badc; // ?
 			}
 
-			compressedSize += outBuff.pos;
+			compressedSize = outBuff.pos;
 			
+#if 0
 			dest_ptr += outBuff.pos;
 			VERIFY3S(dest_remain, >=, outBuff.pos);
 			dest_remain -= outBuff.pos;
@@ -730,6 +733,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
+#endif
 
 			src_ptr += inBuff.pos;
 			VERIFY3S(src_remain, >=, inBuff.pos);
@@ -746,6 +750,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 					}
 					else
 					{
+						endtype = ZSTD_e_end;
 						aprint("no input remaining, don't need more write-space, going around again to write epilogue I guess (compressedsize=%ld)\n", compressedSize);
 					}
 				}
