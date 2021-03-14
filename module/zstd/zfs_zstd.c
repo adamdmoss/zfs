@@ -439,11 +439,12 @@ static void
 objpool_reap(objpool_t *objpool)
 {
 	int64_t now_jiffy = ddi_get_lbolt64();
+	//aprint("(considering idle-reap for pool \"%s\": now=%lld lastused=%lld reaptime=%lld)\n", objpool->pool_name, (long long int)now_jiffy, (long long int)objpool->last_accessed_jiffy, (long long int)(objpool->last_accessed_jiffy + SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC)));
 	if (objpool->last_accessed_jiffy > now_jiffy /*wrap*/
 	    || now_jiffy - objpool->last_accessed_jiffy
 		    > SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC))
 	{
-		aprint("idle-reap for pool \"%s\"", objpool->pool_name);
+		//aprint("actually doing idle-reap for pool \"%s\"\n", objpool->pool_name);
 		objpool_clearunused(objpool);
 	}
 }
