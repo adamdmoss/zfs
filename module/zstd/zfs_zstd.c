@@ -658,7 +658,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	const size_t MAX_INPUT_GULP = 1;//4095;
+	const size_t MAX_INPUT_GULP = 1;//1;//4095;
 	const size_t MAX_OUTPUT_GULP = 1;//3333;
 	size_t src_remain = s_len;
 	const size_t dest_size = d_len - sizeof(*hdr);
@@ -720,20 +720,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			}
 
 			compressedSize = outBuff.pos;
-			
-#if 0
-			dest_ptr += outBuff.pos;
-			VERIFY3S(dest_remain, >=, outBuff.pos);
-			dest_remain -= outBuff.pos;
-			if (dest_remain == 0) // what about the case where we *exactly* fit into the output buffer, that's not really an overflow is it...?  can/should we check if input is all consumed here?
-			{
-				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
-				aprint("FULL(output full, input remains); dest_remain == 0, compressed_size=%ld\n", compressedSize);
-
-				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				goto badc; // ?
-			}
-#endif
 
 			src_ptr += inBuff.pos;
 			VERIFY3S(src_remain, >=, inBuff.pos);
@@ -752,7 +738,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 					{
 						endtype = ZSTD_e_end;
 						aprint("no input remaining, don't need more write-space, going around again to flush + write epilogue I guess (compressedsize=%ld)\n", compressedSize);
-						continue;
 					}
 				}
 				else
@@ -760,7 +745,6 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 					if (endtype == ZSTD_e_end)
 					{
 						aprint("still need more space for flush+epilogue... (%ld internal bytes to drain)\n", status);
-						continue;
 					}
 					else
 					{
