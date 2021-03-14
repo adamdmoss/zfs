@@ -656,26 +656,41 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-	const size_t MAXGULP = 4096;
+	const size_t MAX_INPUT_GULP = 1;//4095;
+	const size_t MAX_OUTPUT_GULP = 1;//3333;
 	size_t src_remain = s_len;
-	char* src_ptr = s_start;
-	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
+	size_t dest_remain = d_len - sizeof(*hdr);
+	char *src_ptr = s_start;
+	char *dest_ptr = hdr->data;
+	aprint("starting new record... (src_remain=%ld dest_remain=%ld)\n", src_remain, dest_remain);
+	size_t compressedSize = 0;// /*hack*/ (size_t)-ZSTD_error_GENERIC;
 	{
-
-		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
 		for(;;)
 		{
-			int is_final_gulp = 0;
-			size_t this_gulp_size = MAXGULP;
-			if (src_remain <= this_gulp_size)
+			int is_final_input_gulp = 0;
+			int is_final_output_gulp = 0;
+			size_t this_output_gulp_size = MAX_OUTPUT_GULP;
+			size_t this_input_gulp_size = MAX_INPUT_GULP;
+			if (src_remain <= this_input_gulp_size)
 			{
-				this_gulp_size = src_remain;
-				is_final_gulp = 1;
+				this_input_gulp_size = src_remain;
+				is_final_input_gulp = 1;
 			}
-			VERIFY3S(src_remain, >, 0);
-			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
-			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
-			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
+			if (dest_remain <= this_output_gulp_size)
+			{
+				this_output_gulp_size = dest_remain;
+				is_final_output_gulp = 1;
+			}
+			aprint("gulp: ingulpsize=%ld, outgulpsize=%ld, src_remain=%ld, dest_remain=%ld\n",
+			this_input_gulp_size, this_output_gulp_size, src_remain, dest_remain);
+			VERIFY(src_remain > 0 || dest_remain > 0);
+			VERIFY(this_input_gulp_size > 0 || this_output_gulp_size > 0);
+			ZSTD_outBuffer outBuff = {dest_ptr, this_output_gulp_size, 0};
+			ZSTD_inBuffer inBuff = {src_ptr, this_input_gulp_size, 0};
+
+			size_t status = ZSTD_compressStream2(cctx, &outBuff, &inBuff,
+			    is_final_input_gulp? ZSTD_e_end : ZSTD_e_continue);
+
 			if (ZSTD_isError(status))
 			{
 				compressedSize = status;
@@ -684,22 +699,45 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc;
 			}
-			if (outBuff.pos == outBuff.size)
+			if (is_final_output_gulp &&
+			    outBuff.pos == outBuff.size) // what about the case where we *exactly* fit into the output buffer, that's not really an overflow is it...?  can/should we check if input is all consumed here?
 			{
 				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
-				//aprint("done(output full, input remains); outpos==outsize");
+				aprint("done(output full, input remains); outpos==outsize\n");
 
 				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 				goto badc; // ?
 			}
-			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
-			src_ptr += thisInBuff.pos;
-			VERIFY3U(src_remain, >=, thisInBuff.pos);
-			src_remain -= thisInBuff.pos;
+
+			compressedSize += outBuff.pos;
+			
+			dest_ptr += outBuff.pos;
+			VERIFY3S(dest_remain, >=, outBuff.pos);
+			dest_remain -= outBuff.pos;
+			if (dest_remain == 0) // what about the case where we *exactly* fit into the output buffer, that's not really an overflow is it...?  can/should we check if input is all consumed here?
+			{
+				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				aprint("done(output full, input remains); dest_remain == 0, compressed_size=%ld\n", compressedSize);
+
+				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				goto badc; // ?
+			}
+
+			src_ptr += inBuff.pos;
+			VERIFY3S(src_remain, >=, inBuff.pos);
+			src_remain -= inBuff.pos;
 			if (src_remain == 0)
 			{
-				// totally done
-				break;
+				if (outBuff.pos < outBuff.size)
+				{
+					aprint("done(src_remain == 0, compressed_size=%ld, outbuff.pos<outbuff.size)\n", compressedSize);
+					// totally done
+					break;
+				}
+				else
+				{
+					aprint("input consumed but still need more output space...\n");
+				}
 			}
 #ifdef __KERNEL__
 			//kpreempt();
@@ -707,12 +745,10 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 #endif
 			cond_resched(); // possibly yield before taking next gulp
 		}
-
-		compressedSize = outBuff.pos;
 	}
 badc:
 
-	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
 
 	obj_ungrab(&cctx_pool, cctx);
@@ -731,7 +767,7 @@ badc:
 		}
 		else
 		{
-			//aprint("(dest was too small?)... ending");
+			aprint("(dest was too small?)... ending\n");
 		}
 		return (s_len);
 	}
