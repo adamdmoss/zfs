@@ -1203,7 +1203,15 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int i = 0, j = 0;
 
 	{
-		XASSERT3(prunerecursion, ==, 0);
+		if (prunerecursion != 0)
+		{
+			static int doneonce = 0;
+			if (!doneonce)
+			{
+				XASSERT3(prunerecursion, ==, 0);
+				doneonce = 1;
+			}
+		}
 
 		static int done = 0;
 		if (!done)
