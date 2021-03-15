@@ -672,12 +672,12 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
+	const size_t dest_limit = d_len - sizeof(*hdr);
 	const size_t MAXGULP = 4096;
 	size_t src_remain = s_len;
 	char* src_ptr = s_start;
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
 	{
-
 		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
 		for(;;)
 		{
@@ -731,7 +731,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	}
 badc:
 
-	//aprint("compressedSize: %zu (iserr?%d - %s)", compressedSize, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	aprint("compressedSize: %zu -> %zu(/%zu) (iserr?%d - %s)\n", s_len, compressedSize, dest_limit, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
 
 	obj_ungrab(&cctx_pool, cctx);
