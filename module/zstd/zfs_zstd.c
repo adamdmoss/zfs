@@ -678,7 +678,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	char* src_ptr = s_start;
 	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
 	{
-		ZSTD_outBuffer outBuff = {hdr->data, d_len - sizeof(*hdr), 0};
+		ZSTD_outBuffer outBuff = {hdr->data, dest_limit, 0};
 		for(;;)
 		{
 			int is_final_gulp = 0;
@@ -711,6 +711,17 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 
 				goto badc; // ?
 			}
+			if (is_final_gulp && status!= 0)
+			{
+				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
+				aprint("FULL2(final gulp, need to write more (%d) but output not full (%d/%d)\n", (int)status, (int)outBuff.pos, (int)outBuff.size);
+				VERIFY3S(status, <, outBuff.size - outBuff.pos);
+
+				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem4: %s\n", ZSTD_getErrorName(rstatus));
+
+				goto badc; // ?
+			}
 			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
 			src_ptr += thisInBuff.pos;
 			VERIFY3U(src_remain, >=, thisInBuff.pos);
@@ -731,7 +742,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	}
 badc:
 
-	aprint("compressedSize: %zu -> %zu(/%zu) (iserr?%d - %s)\n", s_len, compressedSize, dest_limit, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
+	//aprint("compressedSize: %zu -> %zu(/%zu) (iserr?%d - %s)\n", s_len, compressedSize, dest_limit, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
 
 	obj_ungrab(&cctx_pool, cctx);
