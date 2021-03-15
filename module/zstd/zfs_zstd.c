@@ -52,7 +52,7 @@
 
 
 #if defined(__KERNEL__)
-#if 0
+#if 1
 extern	int printk(const char *fmt, ...);
 #define aprint printk
 #else
@@ -413,6 +413,7 @@ objpool_clearunused(objpool_t *objpool)
 		{
 			// if ANY object is still in use then don't do anything
 			ZSPINLOCK_UNLOCK(&objpool->listlock);
+			aprint("ADAM: pool \"%s\" reap aborted, entry#%d still in use\n", objpool->pool_name, i);
 			return;
 		}
 	}
@@ -482,7 +483,7 @@ obj_grab(objpool_t *objpool)
 	}
 	else
 	{
-		//aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
+		aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
 		int newlistbytes = sizeof(void *) * (objpool->count + 1);
 		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
 		if (likely(newlist!=NULL))

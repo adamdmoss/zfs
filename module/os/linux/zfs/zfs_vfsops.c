@@ -62,6 +62,14 @@
 #include <linux/vfs_compat.h>
 #include "zfs_comutil.h"
 
+extern	int printk(const char *fmt, ...);
+#ifdef __KERNEL__
+#define aprint printk
+#else
+#define aprint(...) printf(__VA_ARGS__)
+#endif
+#define XASSERT3(L,C,R) do{const intptr_t lll=(intptr_t)(L); const intptr_t rrr=(intptr_t)(R); if(unlikely(!(lll C rrr)))aprint("ADAM ASSERT FAILURE: %s:%s:%d %s(%lld) %s %s(%lld) failed\n", __FILE__, __FUNCTION__, __LINE__, #L, (long long int)lll, #C, #R, (long long int)rrr);}while(0)
+
 enum {
 	TOKEN_RO,
 	TOKEN_RW,
@@ -815,7 +823,7 @@ zfsvfs_create_impl(zfsvfs_t **zfvp, zfsvfs_t *zfsvfs, objset_t *os)
 	mutex_init(&zfsvfs->z_lock, NULL, MUTEX_DEFAULT, NULL);
 	list_create(&zfsvfs->z_all_znodes, sizeof (znode_t),
 	    offsetof(znode_t, z_link_node));
-	rrm_init(&zfsvfs->z_teardown_lock, B_FALSE);
+	ZFS_TEARDOWN_INIT(zfsvfs);
 	rw_init(&zfsvfs->z_teardown_inactive_lock, NULL, RW_DEFAULT, NULL);
 	rw_init(&zfsvfs->z_fuid_lock, NULL, RW_DEFAULT, NULL);
 
@@ -951,7 +959,7 @@ zfsvfs_free(zfsvfs_t *zfsvfs)
 	mutex_destroy(&zfsvfs->z_znodes_lock);
 	mutex_destroy(&zfsvfs->z_lock);
 	list_destroy(&zfsvfs->z_all_znodes);
-	rrm_destroy(&zfsvfs->z_teardown_lock);
+	ZFS_TEARDOWN_DESTROY(zfsvfs);
 	rw_destroy(&zfsvfs->z_teardown_inactive_lock);
 	rw_destroy(&zfsvfs->z_fuid_lock);
 	for (i = 0; i != size; i++) {
@@ -1185,6 +1193,7 @@ zfs_root(zfsvfs_t *zfsvfs, struct inode **ipp)
  * to the end of the z_all_znodes list.  New znodes are inserted at the
  * end of the list so we're always scanning the oldest znodes first.
  */
+static int64_t prunerecursion = 0;
 static int
 zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 {
@@ -1192,6 +1201,26 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int max_array = MIN(nr_to_scan, PAGE_SIZE * 8 / sizeof (znode_t *));
 	int objects = 0;
 	int i = 0, j = 0;
+
+	{
+		if (prunerecursion != 0)
+		{
+			static int doneonce = 0;
+			if (!doneonce)
+			{
+				XASSERT3(prunerecursion, ==, 0);
+				doneonce = 1;
+			}
+		}
+
+		static int done = 0;
+		if (!done)
+		{
+			done = 1;
+			aprint("ADAM: HUZZAH, we're using zfs_prune_aliases\n");
+		}
+	}
+	atomic_inc_64(&prunerecursion);
 
 	zp_array = kmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
 
@@ -1205,12 +1234,24 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		list_remove(&zfsvfs->z_all_znodes, zp);
 		list_insert_tail(&zfsvfs->z_all_znodes, zp);
 
-		/* Skip active znodes and .zfs entries */
-		if (MUTEX_HELD(&zp->z_lock) || zp->z_is_ctldir)
+		/* Skip .zfs entries */
+		if (zp->z_is_ctldir)
 			continue;
 
-		if (igrab(ZTOI(zp)) == NULL)
+		/* Skip active znodes (why...?) */
+		if (!mutex_tryenter(&zp->z_lock))
+		{
+			//aprint("prune: skipping znode with modlock");
 			continue;
+		}
+
+		/* Add a ref while it's in our array */
+		if (unlikely(igrab(ZTOI(zp)) == NULL))
+		{
+			mutex_exit(&zp->z_lock);
+			aprint("prune: skipping znode already being freed\n");
+			continue;
+		}
 
 		zp_array[j] = zp;
 		j++;
@@ -1223,14 +1264,17 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		ASSERT3P(zp, !=, NULL);
 		d_prune_aliases(ZTOI(zp));
 
+		/* check if we're the last reference now, which will mean zrele() will free this */
 		if (atomic_read(&ZTOI(zp)->i_count) == 1)
 			objects++;
-
+ 
+		mutex_exit(&zp->z_lock);
 		zrele(zp);
 	}
 
 	kmem_free(zp_array, max_array * sizeof (znode_t *));
 
+	atomic_dec_64(&prunerecursion);
 	return (objects);
 }
 
@@ -1336,7 +1380,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 		}
 	}
 
-	rrm_enter(&zfsvfs->z_teardown_lock, RW_WRITER, FTAG);
+	ZFS_TEARDOWN_ENTER_WRITE(zfsvfs, FTAG);
 
 	if (!unmounting) {
 		/*
@@ -1367,7 +1411,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	 */
 	if (!unmounting && (zfsvfs->z_unmounted || zfsvfs->z_os == NULL)) {
 		rw_exit(&zfsvfs->z_teardown_inactive_lock);
-		rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
+		ZFS_TEARDOWN_EXIT(zfsvfs, FTAG);
 		return (SET_ERROR(EIO));
 	}
 
@@ -1404,7 +1448,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	if (unmounting) {
 		zfsvfs->z_unmounted = B_TRUE;
 		rw_exit(&zfsvfs->z_teardown_inactive_lock);
-		rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
+		ZFS_TEARDOWN_EXIT(zfsvfs, FTAG);
 	}
 
 	/*
@@ -1734,7 +1778,11 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 			VERIFY(zfsctl_root_lookup(*ipp, "snapshot", ipp,
 			    0, kcred, NULL, NULL) == 0);
 		} else {
-			igrab(*ipp);
+			/*
+			 * Must have an existing ref, so igrab()
+			 * cannot return NULL
+			 */
+			VERIFY3P(igrab(*ipp), !=, NULL);
 		}
 		ZFS_EXIT(zfsvfs);
 		return (0);
@@ -1810,7 +1858,7 @@ zfs_resume_fs(zfsvfs_t *zfsvfs, dsl_dataset_t *ds)
 	int err, err2;
 	znode_t *zp;
 
-	ASSERT(RRM_WRITE_HELD(&zfsvfs->z_teardown_lock));
+	ASSERT(ZFS_TEARDOWN_WRITE_HELD(zfsvfs));
 	ASSERT(RW_WRITE_HELD(&zfsvfs->z_teardown_inactive_lock));
 
 	/*
@@ -1886,7 +1934,7 @@ bail:
 
 	/* release the VFS ops */
 	rw_exit(&zfsvfs->z_teardown_inactive_lock);
-	rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
+	ZFS_TEARDOWN_EXIT(zfsvfs, FTAG);
 
 	if (err != 0) {
 		/*
@@ -1905,7 +1953,7 @@ bail:
 int
 zfs_end_fs(zfsvfs_t *zfsvfs, dsl_dataset_t *ds)
 {
-	ASSERT(RRM_WRITE_HELD(&zfsvfs->z_teardown_lock));
+	ASSERT(ZFS_TEARDOWN_WRITE_HELD(zfsvfs));
 	ASSERT(RW_WRITE_HELD(&zfsvfs->z_teardown_inactive_lock));
 
 	/*
@@ -1923,7 +1971,7 @@ zfs_end_fs(zfsvfs_t *zfsvfs, dsl_dataset_t *ds)
 
 	/* release the VOPs */
 	rw_exit(&zfsvfs->z_teardown_inactive_lock);
-	rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
+	ZFS_TEARDOWN_EXIT(zfsvfs, FTAG);
 
 	/*
 	 * Try to force unmount this file system.
