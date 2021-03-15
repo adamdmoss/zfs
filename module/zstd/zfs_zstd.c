@@ -357,8 +357,11 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
+#define NERF_OBJ_POOL 1 /* >1 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
+
 #define OBJPOOL_TIMEOUT_SEC 15
+
 #define ZSPINLOCK_TRYLOCK(L) (!atomic_cas_32((L), 0U, 1U))
 #define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
 #define ZSPINLOCK_UNLOCK(L) atomic_dec_32(L)
@@ -463,6 +466,10 @@ objpool_destroy(objpool_t *objpool)
 static void*
 obj_grab(objpool_t *objpool)
 {
+#if NERF_OBJ_POOL
+	return objpool->obj_alloc();
+#endif
+
 	void* found = NULL;
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
@@ -525,6 +532,10 @@ obj_grab(objpool_t *objpool)
 static void
 obj_ungrab(objpool_t *objpool, void* obj)
 {
+#if NERF_OBJ_POOL
+	return objpool->obj_free(obj);
+#endif
+
 	VERIFY3P(obj, !=, NULL);
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
