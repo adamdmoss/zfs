@@ -558,7 +558,9 @@ cctx_free(void *ptr)
 static void
 cctx_reset(void *ptr)
 {
-	ZSTD_CCtx_reset(ptr, ZSTD_reset_parameters);
+	const size_t status = ZSTD_CCtx_reset(ptr, /*ZSTD_reset_session_and_parameters*/ZSTD_reset_parameters);
+	//VERIFY(!ZSTD_isError(status));
+	if (ZSTD_isError(status)) aprint("uh-oh, cctx reset problem1: %s\n", ZSTD_getErrorName(status));
 }
 
 static void *
@@ -574,7 +576,9 @@ dctx_free(void *ptr)
 static void
 dctx_reset(void *ptr)
 {
-	ZSTD_DCtx_reset(ptr, ZSTD_reset_parameters);
+	const size_t status = ZSTD_DCtx_reset(ptr, /*ZSTD_reset_session_and_parameters*/ZSTD_reset_parameters);
+	//VERIFY(!ZSTD_isError(status));
+	if (ZSTD_isError(status)) aprint("uh-oh, dctx reset problem1: %s\n", ZSTD_getErrorName(status));
 }
 
 static objpool_t cctx_pool = {
@@ -682,7 +686,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				compressedSize = status;
 				aprint("status was error: %s\n", ZSTD_getErrorName(status));
 
-				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem2: %s\n", ZSTD_getErrorName(rstatus));
 				goto badc;
 			}
 			if (outBuff.pos == outBuff.size)
@@ -690,7 +695,9 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				//aprint("done(output full, input remains); outpos==outsize");
 
-				ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem3: %s\n", ZSTD_getErrorName(rstatus));
+
 				goto badc; // ?
 			}
 			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
@@ -840,7 +847,10 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	 */
 	if (ZSTD_isError(result)) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_fail);
-		ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+
+		const size_t rstatus = ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+		if (ZSTD_isError(rstatus)) aprint("uh-oh, dctx reset problem1: %s\n", ZSTD_getErrorName(rstatus));
+
 		obj_ungrab(&dctx_pool, dctx);
 		return (1);
 	}
