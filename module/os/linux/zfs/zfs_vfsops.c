@@ -1249,7 +1249,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		if (unlikely(igrab(ZTOI(zp)) == NULL))
 		{
 			mutex_exit(&zp->z_lock);
-			aprint("prune: skipping znode already being freed\n");
+			//aprint("prune: skipping znode already being freed\n");
 			continue;
 		}
 
