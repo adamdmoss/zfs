@@ -40,17 +40,6 @@
 #include <sys/zio_compress.h>
 #include <sys/zstd/zstd.h>
 
-#if defined(__KERNEL__)
-#if 1
-extern	int printk(const char *fmt, ...);
-#define aprint printk
-#else
-#define aprint(...) do{}while(0)
-#endif
-#else
-#define aprint(...) printf(__VA_ARGS__)
-#endif
-
 /*
  * If nonzero, every 1/X decompression attempts will fail, simulating
  * an undetected memory error.
@@ -125,7 +114,6 @@ zio_compress_select(spa_t *spa, enum zio_compress child,
 static int
 zio_compress_zeroed_cb(void *data, size_t len, void *private)
 {
-	VERIFY3S(len % 8, ==, 0);
 	uint64_t *end = (uint64_t *)((char *)data + len);
 	for (uint64_t *word = (uint64_t *)data; word < end; word++)
 		if (*word != 0)
@@ -136,7 +124,7 @@ zio_compress_zeroed_cb(void *data, size_t len, void *private)
 
 size_t
 zio_compress_data(enum zio_compress c, abd_t *src, void *dst, size_t s_len,
-    size_t max_compressed_size, uint8_t level)
+    uint8_t level)
 {
 	size_t c_len, d_len;
 	uint8_t complevel;
@@ -157,8 +145,6 @@ zio_compress_data(enum zio_compress c, abd_t *src, void *dst, size_t s_len,
 
 	/* Compress at least 12.5% */
 	d_len = s_len - (s_len >> 3);
-	//if (d_len > max_compressed_size) aprint("HUZZAH(%d > %d)\n", (int)(d_len), (int)(max_compressed_size));
-	d_len = MIN(d_len, max_compressed_size);
 
 	complevel = ci->ci_level;
 
@@ -175,14 +161,10 @@ zio_compress_data(enum zio_compress c, abd_t *src, void *dst, size_t s_len,
 		ASSERT3U(complevel, !=, ZIO_COMPLEVEL_INHERIT);
 	}
 
-	//aprint("compress: src_len = %ld, level = %d, type = %d (%s)\n", s_len, (int)level, c, zio_compress_table[c].ci_name);
-
 	/* No compression algorithms can read from ABDs directly */
 	void *tmp = abd_borrow_buf_copy(src, s_len);
 	c_len = ci->ci_compress(tmp, dst, s_len, d_len, complevel);
 	abd_return_buf(src, tmp, s_len);
-
-	//if (c_len > max_compressed_size) aprint("WOOHOO?!(%d > %d)\n", (int)c_len, (int)max_compressed_size);
 
 	if (c_len > d_len)
 		return (s_len);

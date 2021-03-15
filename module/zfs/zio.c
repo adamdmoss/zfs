@@ -51,17 +51,6 @@
 #include <sys/dsl_crypt.h>
 #include <cityhash.h>
 
-#if defined(__KERNEL__)
-#if 1
-extern	int printk(const char *fmt, ...);
-#define aprint printk
-#else
-#define aprint(...) do{}while(0)
-#endif
-#else
-#define aprint(...) printf(__VA_ARGS__)
-#endif
-
 /*
  * ==========================================================================
  * I/O type descriptions
@@ -1690,45 +1679,26 @@ zio_write_compress(zio_t *zio)
 	/* If it's a compressed write that is not raw, compress the buffer. */
 	if (compress != ZIO_COMPRESS_OFF &&
 	    !(zio->io_flags & ZIO_FLAG_RAW_COMPRESS)) {
-		boolean_t embedded_allowed = !zp->zp_dedup && !zp->zp_encrypt &&
-		    zp->zp_level == 0 && !DMU_OT_HAS_FILL(zp->zp_type) &&
-		    spa_feature_is_enabled(spa, SPA_FEATURE_EMBEDDED_DATA);
-		//aprint("compress in: psize=%ld, lsize=%ld, osize=%ld, level=%d\n", (long int)psize, (long int)lsize, (long int)zio->io_orig_size, (int)zp->zp_complevel);
-
-		size_t max_compressed_size = lsize;
-		max_compressed_size = roundup(max_compressed_size, spa->spa_min_alloc) - spa->spa_min_alloc; // we need to save at least one physical block
-		if (embedded_allowed) max_compressed_size = MAX(max_compressed_size, BPE_PAYLOAD_SIZE);
-		//aprint("lsize=%d, max_compressed_size=%d\n", (int)lsize, (int)max_compressed_size);
-
-		void *cbuf = zio_buf_alloc(max_compressed_size);
-
+		void *cbuf = zio_buf_alloc(lsize);
 		psize = zio_compress_data(compress, zio->io_abd, cbuf, lsize,
-		    max_compressed_size, zp->zp_complevel);
-		//if (psize == 0) aprint("all-zero!\n"); else aprint("boopy\n");
-		//if (psize >= lsize) aprint("uncompressible\n"); else aprint(":3\n");
-		size_t prounded = (size_t)roundup(psize,
-		spa->spa_min_alloc);
-		int uncompressiblep = 0;
-		if (prounded >= lsize)
-		{
-			//aprint("uncompressible because of ashift (logical size: %d, compressed size: %d, compressed size rounded-up to ashift(%d): %d), maybe could have discovered that earlier\n", (int)lsize, (int)psize, (int)spa->spa_min_alloc, (int)prounded);
-			uncompressiblep = 1;
-		}
+		    zp->zp_complevel);
 		if (psize == 0 || psize >= lsize) {
 			compress = ZIO_COMPRESS_OFF;
-			zio_buf_free(cbuf, max_compressed_size);
-		} else if (embedded_allowed && psize <= BPE_PAYLOAD_SIZE) {
+			zio_buf_free(cbuf, lsize);
+		} else if (!zp->zp_dedup && !zp->zp_encrypt &&
+		    psize <= BPE_PAYLOAD_SIZE &&
+		    zp->zp_level == 0 && !DMU_OT_HAS_FILL(zp->zp_type) &&
+		    spa_feature_is_enabled(spa, SPA_FEATURE_EMBEDDED_DATA)) {
 			encode_embedded_bp_compressed(bp,
 			    cbuf, compress, lsize, psize);
 			BPE_SET_ETYPE(bp, BP_EMBEDDED_TYPE_DATA);
 			BP_SET_TYPE(bp, zio->io_prop.zp_type);
 			BP_SET_LEVEL(bp, zio->io_prop.zp_level);
-			zio_buf_free(cbuf, max_compressed_size);
+			zio_buf_free(cbuf, lsize);
 			bp->blk_birth = zio->io_txg;
 			zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
 			ASSERT(spa_feature_is_active(spa,
 			    SPA_FEATURE_EMBEDDED_DATA));
-			//if(uncompressiblep) aprint("... but still fit in embedded data (%d/%d), okay\n", (int)psize, (int)(BPE_PAYLOAD_SIZE));
 			return (zio);
 		} else {
 			/*
@@ -1744,15 +1714,15 @@ zio_write_compress(zio_t *zio)
 			    spa->spa_min_alloc);
 			if (rounded >= lsize) {
 				compress = ZIO_COMPRESS_OFF;
-				zio_buf_free(cbuf, max_compressed_size);
+				zio_buf_free(cbuf, lsize);
 				psize = lsize;
 			} else {
-				abd_t *cdata = abd_get_from_buf(cbuf, max_compressed_size);
+				abd_t *cdata = abd_get_from_buf(cbuf, lsize);
 				abd_take_ownership_of_buf(cdata, B_TRUE);
 				abd_zero_off(cdata, psize, rounded - psize);
 				psize = rounded;
 				zio_push_transform(zio, cdata,
-				    psize, max_compressed_size, NULL);
+				    psize, lsize, NULL);
 			}
 		}
 
@@ -1764,8 +1734,6 @@ zio_write_compress(zio_t *zio)
 		*bp = zio->io_bp_orig;
 		zio->io_pipeline = zio->io_orig_pipeline;
 
-		//aprint("compress out: psize=%ld, lsize=%ld, osize=%ld\n", (long int)psize, (long int)lsize, (long int)zio->io_orig_size);
-
 	} else if ((zio->io_flags & ZIO_FLAG_RAW_ENCRYPT) != 0 &&
 	    zp->zp_type == DMU_OT_DNODE) {
 		/*
@@ -1776,7 +1744,7 @@ zio_write_compress(zio_t *zio)
 		 * to a hole.
 		 */
 		psize = zio_compress_data(ZIO_COMPRESS_EMPTY,
-		    zio->io_abd, NULL, lsize, lsize, zp->zp_complevel);
+		    zio->io_abd, NULL, lsize, zp->zp_complevel);
 		if (psize == 0 || psize >= lsize)
 			compress = ZIO_COMPRESS_OFF;
 	} else {

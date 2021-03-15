@@ -52,7 +52,7 @@
 
 
 #if defined(__KERNEL__)
-#if 1
+#if 0
 extern	int printk(const char *fmt, ...);
 #define aprint printk
 #else
