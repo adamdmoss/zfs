@@ -357,7 +357,7 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define NERF_OBJ_POOL 1 /* >1 to skip pool and use raw obj alloc/free always */
+#define NERF_OBJ_POOL 0 /* >1 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
 
 #define OBJPOOL_TIMEOUT_SEC 15
