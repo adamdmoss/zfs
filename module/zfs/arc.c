@@ -4407,6 +4407,7 @@ arc_evict_impl(arc_state_t *state, uint64_t spa, int64_t bytes,
  * be dropped from the VFS cache.  This will make dnode meta data buffers
  * available for reclaim.
  */
+static uint64_t evictmetarecursion = 0;
 static uint64_t
 arc_evict_meta_balanced(uint64_t meta_used)
 {
@@ -4420,9 +4421,8 @@ arc_evict_meta_balanced(uint64_t meta_used)
 	int restarts_remaining = zfs_arc_meta_adjust_restarts;
 	int restarts_done = 0;
 
-	static int recursion = 0;
-	XASSERT3(recursion, ==, 0);
-	recursion++;
+	XASSERT3(evictmetarecursion, ==, 0);
+	atomic_inc_64(&evictmetarecursion);
 
 	uint64_t meta_target = arc_meta_limit;
 
@@ -4523,7 +4523,7 @@ restart:
 				&& prune_tries <= MAX_PRUNE_TRIES
 				&& zfs_arc_meta_prune > 0) {
 				prune += zfs_arc_meta_prune;
-				if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);
+				//if(0)aprint("... (prune_tries=%d restarts_done=%d total_evicted=%ld, adjustment_remaining=%ld); waiting for up to %d node prunes...", (int)prune_tries, (int)restarts_done, total_evicted, adjustment_remaining, (int)prune);
 				++prune_tries;
 				// note: each prune attempt starts in a new place implicitly, so we're not trying to prune the same subset of znodes every time
 				arc_prune_async(prune);
@@ -4558,8 +4558,7 @@ restart:
 			}
 			else
 			{
-				if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now",
-				    making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
+				//if(0)aprint("arc_evict_meta_balanced: progress now unlikely (making_progress=%d zfs_arc_meta_prune=%d, total_evicted=%ld, adjustment_remaining=%ld) with possible %d restarts left (%d restarts done), giving up for now", making_progress, zfs_arc_meta_prune, total_evicted, adjustment_remaining, restarts_remaining, restarts_done);
 			}
 		}
 	}
@@ -4568,7 +4567,7 @@ restart:
 		// totally cleared enough!
 		prune = 0; // reset prune aggressiveness
 	}
-	recursion--;
+	atomic_dec_64(&evictmetarecursion);
 	return (total_evicted);
 }
 
