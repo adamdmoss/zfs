@@ -2340,11 +2340,11 @@ add_reference(arc_buf_hdr_t *hdr, void *tag)
 			arc_evictable_space_decrement(hdr, state);
 		}
 		/* remove the prefetch flag if we get a reference */
-		if (HDR_HAS_L2HDR(hdr))
+		/*if (HDR_HAS_L2HDR(hdr))
 			l2arc_hdr_arcstats_decrement_state(hdr);
 		arc_hdr_clear_flags(hdr, ARC_FLAG_PREFETCH);
 		if (HDR_HAS_L2HDR(hdr))
-			l2arc_hdr_arcstats_increment_state(hdr);
+			l2arc_hdr_arcstats_increment_state(hdr);*/
 	}
 }
 
