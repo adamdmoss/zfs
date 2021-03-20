@@ -1744,8 +1744,7 @@ cont:
 			 * completed after "lwb_write_zio" completed.
 			 */
 			error = zilog->zl_get_data(itx->itx_private,
-			    itx->itx_private2, lrwb, dbuf, lwb,
-			    lwb->lwb_write_zio);
+			    lrwb, dbuf, lwb, lwb->lwb_write_zio);
 
 			if (error == EIO) {
 				txg_wait_synced(zilog->zl_dmu_pool, txg);
