@@ -361,13 +361,20 @@ zstd_mempool_free(struct zstd_kmem *z)
 #define GRABAMP 0*10000 /*>0 to amplify grab/ungrab contention for testing*/
 
 #define OBJPOOL_TIMEOUT_SEC 15
-
+#if 0
+typedef uint32_t zyieldingspinlock_t;
 #define ZSPINLOCK_TRYLOCK(L) (likely(0 == atomic_swap_32(L, 1)))
 #define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
-#define ZSPINLOCK_UNLOCK(L) (*(L) = 0)
+#define ZSPINLOCK_UNLOCK(L) (*(L) = 0 /*fixme: checkme: probably needs membar or atomic*/)
 #define ZSPINLOCK_INIT(L) (*(L) = 0)
 #define ZSPINLOCK_DESTROY(L) /* don't need to do anything for this */
-typedef uint32_t zyieldingspinlock_t;
+#else
+typedef kmutex_t zyieldingspinlock_t;
+#define ZSPINLOCK_LOCK(L) mutex_enter(L)
+#define ZSPINLOCK_UNLOCK(L) mutex_exit(L)
+#define ZSPINLOCK_INIT(L) mutex_init(L, NULL, MUTEX_DEFAULT, NULL)
+#define ZSPINLOCK_DESTROY(L) mutex_destroy(L)
+#endif
 
 typedef struct {
 	zyieldingspinlock_t listlock;
@@ -641,7 +648,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	hdr = (zfs_zstdhdr_t *)d_start;
 
 	/* Skip compression if the specified level is invalid */
-	if (zstd_enum_to_level(level, &zstd_level)) {
+	if (unlikely(zstd_enum_to_level(level, &zstd_level))) {
 		ZSTDSTAT_BUMP(zstd_stat_com_inval);
 		return (s_len);
 	}
@@ -656,7 +663,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	 * Out of kernel memory, gently fall through - this will disable
 	 * compression in zio_compress_data
 	 */
-	if (!cctx) {
+	if (unlikely(!cctx)) {
 		ZSTDSTAT_BUMP(zstd_stat_com_alloc_fail);
 		return (s_len);
 	}
@@ -694,7 +701,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
 			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
 			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
-			if (ZSTD_isError(status))
+			if (unlikely(ZSTD_isError(status)))
 			{
 				compressedSize = status;
 				aprint("status was error: %s\n", ZSTD_getErrorName(status));
@@ -713,7 +720,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 
 				goto badc; // ?
 			}
-			if (is_final_gulp && status!= 0)
+			if (unlikely(is_final_gulp && status!= 0))
 			{
 				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
 				aprint("FULL2(final gulp, need to write more (%d) but output not full (%d/%d)\n", (int)status, (int)outBuff.pos, (int)outBuff.size);
@@ -756,7 +763,7 @@ badc:
 		 * too small, that is not a failure. Everything else is a
 		 * failure, so increment the compression failure counter.
 		 */
-		if (ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall)
+		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
 		{
 			aprint("ERROR status... ending\n");
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
@@ -838,7 +845,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	 * An invalid level is a strong indicator for data corruption! In such
 	 * case return an error so the upper layers can try to fix it.
 	 */
-	if (zstd_enum_to_level(hdr_copy.level, &zstd_level)) {
+	if (unlikely(zstd_enum_to_level(hdr_copy.level, &zstd_level))) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_inval);
 		return (1);
 	}
@@ -847,14 +854,14 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	ASSERT3U(hdr_copy.level, !=, ZIO_COMPLEVEL_INHERIT);
 
 	/* Invalid compressed buffer size encoded at start */
-	if (c_len + sizeof (*hdr) > s_len) {
+	if (unlikely(c_len + sizeof (*hdr) > s_len)) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_header_inval);
 		return (1);
 	}
 
 	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&dctx_pool); if(foo) obj_ungrab(&dctx_pool, foo);}
 	dctx = obj_grab(&dctx_pool);
-	if (!dctx) {
+	if (unlikely(!dctx)) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
 		return (1);
 	}
@@ -869,7 +876,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	 * Returns 0 on success (decompression function returned non-negative)
 	 * and non-zero on failure (decompression function returned negative.
 	 */
-	if (ZSTD_isError(result)) {
+	if (unlikely(ZSTD_isError(result))) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_fail);
 
 		const size_t rstatus = ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
