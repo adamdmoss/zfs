@@ -362,10 +362,10 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 #define OBJPOOL_TIMEOUT_SEC 15
 
-#define ZSPINLOCK_TRYLOCK(L) (likely(0 == atomic_swap_32(L, 1)))
-#define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
-#define ZSPINLOCK_UNLOCK(L) (*(L) = 0)
-#define ZSPINLOCK_INIT(L) (*(L) = 0)
+#define _ZSPINLOCK_TRYLOCK(L) (likely(0 == atomic_swap_32(L, 1)))
+#define ZSPINLOCK_LOCK(L) while(!_ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
+#define ZSPINLOCK_UNLOCK(L) do { *(L) = 0; }while(0)
+#define ZSPINLOCK_INIT(L) do {*(L) = 0; }while(0)
 #define ZSPINLOCK_DESTROY(L) /* don't need to do anything for this */
 typedef uint32_t zyieldingspinlock_t;
 
