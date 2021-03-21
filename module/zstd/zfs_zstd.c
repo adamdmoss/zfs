@@ -387,7 +387,7 @@ static void objpool_reap(objpool_t *const objpool);
 static void objpool_destroy(objpool_t *const objpool);
 
 static void* obj_grab(objpool_t *const objpool);
-static void obj_ungrab(objpool_t *const objpool, const void* const obj);
+static void obj_ungrab(objpool_t *const objpool, void* const obj);
 
 static void
 objpool_reset_idle_timer(objpool_t *const objpool)
@@ -471,7 +471,7 @@ obj_grab(objpool_t *const objpool)
 	return objpool->obj_alloc();
 #endif
 
-	const void* found = NULL;
+	void* found = NULL;
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
 	const int objcount = objpool->count;
@@ -532,7 +532,7 @@ obj_grab(objpool_t *const objpool)
 }
 
 static void
-obj_ungrab(objpool_t *const objpool, const void* const obj)
+obj_ungrab(objpool_t *const objpool, void* const obj)
 {
 #if NERF_OBJ_POOL
 	return objpool->obj_free(obj);
