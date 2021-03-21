@@ -2847,7 +2847,7 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
                     if (normalizedCounter[s] >= largeLimit) DTableH.fastMode=0;
                     symbolNext[s] = normalizedCounter[s];
         }   }   }
-        memcpy(dt, &DTableH, sizeof(DTableH));
+        __builtin_memcpy(dt, &DTableH, sizeof(DTableH));
     }
 
     /* Spread symbols */
@@ -2856,7 +2856,8 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
         U32 s, position = 0;
         for (s=0; s<maxSV1; s++) {
             int i;
-            for (i=0; i<normalizedCounter[s]; i++) {
+            int const ncs = normalizedCounter[s];
+            for (i=0; i<ncs; i++) {
                 tableDecode[position].symbol = (FSE_FUNCTION_TYPE)s;
                 position = (position + step) & tableMask;
                 while (position > highThreshold) position = (position + step) & tableMask;   /* lowprob area */
@@ -26788,7 +26789,7 @@ ZSTD_buildFSETable(ZSTD_seqSymbol* dt,
                     assert(normalizedCounter[s]>=0);
                     symbolNext[s] = (U16)normalizedCounter[s];
         }   }   }
-        memcpy(dt, &DTableH, sizeof(DTableH));
+        __builtin_memcpy(dt, &DTableH, sizeof(DTableH));
     }
 
     /* Spread symbols */
@@ -26797,7 +26798,8 @@ ZSTD_buildFSETable(ZSTD_seqSymbol* dt,
         U32 s, position = 0;
         for (s=0; s<maxSV1; s++) {
             int i;
-            for (i=0; i<normalizedCounter[s]; i++) {
+            int const ncs = normalizedCounter[s];
+            for (i=0; i<ncs; i++) {
                 tableDecode[position].baseValue = s;
                 position = (position + step) & tableMask;
                 while (position > highThreshold) position = (position + step) & tableMask;   /* lowprob area */
