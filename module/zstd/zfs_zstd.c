@@ -362,9 +362,9 @@ zstd_mempool_free(struct zstd_kmem *z)
 
 #define OBJPOOL_TIMEOUT_SEC 15
 
-#define ZSPINLOCK_TRYLOCK(L) (!atomic_cas_32((L), 0U, 1U))
+#define ZSPINLOCK_TRYLOCK(L) (likely(0 == atomic_swap_32(L, 1)))
 #define ZSPINLOCK_LOCK(L) while(!ZSPINLOCK_TRYLOCK(L)){ cond_resched(); }
-#define ZSPINLOCK_UNLOCK(L) atomic_dec_32(L)
+#define ZSPINLOCK_UNLOCK(L) (*(L) = 0)
 #define ZSPINLOCK_INIT(L) (*(L) = 0)
 #define ZSPINLOCK_DESTROY(L) /* don't need to do anything for this */
 typedef uint32_t zyieldingspinlock_t;
@@ -382,22 +382,22 @@ typedef struct {
 	const char*const pool_name;
 } objpool_t;
 
-static void objpool_init(objpool_t *objpool);
-static void objpool_reap(objpool_t *objpool);
-static void objpool_destroy(objpool_t *objpool);
+static void objpool_init(objpool_t *const objpool);
+static void objpool_reap(objpool_t *const objpool);
+static void objpool_destroy(objpool_t *const objpool);
 
-static void* obj_grab(objpool_t *objpool);
-static void  obj_ungrab(objpool_t *objpool, void* obj);
+static void* obj_grab(objpool_t *const objpool);
+static void obj_ungrab(objpool_t *const objpool, const void* const obj);
 
 static void
-objpool_reset_idle_timer(objpool_t *objpool)
+objpool_reset_idle_timer(objpool_t *const objpool)
 {
 	const int64_t now_jiffy = ddi_get_lbolt64();
 	objpool->last_accessed_jiffy = now_jiffy;
 }
 
 static void
-objpool_init(objpool_t *objpool)
+objpool_init(objpool_t *const objpool)
 {
 	ZSPINLOCK_INIT(&objpool->listlock);
 
@@ -407,7 +407,7 @@ objpool_init(objpool_t *objpool)
 }
 
 static void
-objpool_clearunused(objpool_t *objpool)
+objpool_clearunused(objpool_t *const objpool)
 {
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	for (int i = 0; i < objpool->count; ++i)
@@ -440,7 +440,7 @@ objpool_clearunused(objpool_t *objpool)
 }
 
 static void
-objpool_reap(objpool_t *objpool)
+objpool_reap(objpool_t *const objpool)
 {
 	int64_t now_jiffy = ddi_get_lbolt64();
 	//aprint("(considering idle-reap for pool \"%s\": now=%lld lastused=%lld reaptime=%lld)\n", objpool->pool_name, (long long int)now_jiffy, (long long int)objpool->last_accessed_jiffy, (long long int)(objpool->last_accessed_jiffy + SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC)));
@@ -454,7 +454,7 @@ objpool_reap(objpool_t *objpool)
 }
 
 static void
-objpool_destroy(objpool_t *objpool)
+objpool_destroy(objpool_t *const objpool)
 {
 	objpool_clearunused(objpool);
 	VERIFY3U(objpool->count, ==, 0);
@@ -465,18 +465,19 @@ objpool_destroy(objpool_t *objpool)
 }
 
 static void*
-obj_grab(objpool_t *objpool)
+obj_grab(objpool_t *const objpool)
 {
 #if NERF_OBJ_POOL
 	return objpool->obj_alloc();
 #endif
 
-	void* found = NULL;
+	const void* found = NULL;
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
-	for (int i = 0; i < objpool->count; ++i)
+	const int objcount = objpool->count;
+	for (int i = 0; i < objcount; ++i)
 	{
-		int j = (i + threadpid) % objpool->count;
+		const int j = (i + threadpid) % objcount;
 		if ((found = objpool->list[j]) != NULL)
 		{
 			objpool->list[j] = NULL;
@@ -531,18 +532,19 @@ obj_grab(objpool_t *objpool)
 }
 
 static void
-obj_ungrab(objpool_t *objpool, void* obj)
+obj_ungrab(objpool_t *const objpool, const void* const obj)
 {
 #if NERF_OBJ_POOL
 	return objpool->obj_free(obj);
 #endif
 
-	VERIFY3P(obj, !=, NULL);
+	ASSERT3P(obj, !=, NULL);
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int threadpid = (int)getpid();
-	for (int i = 0; i < objpool->count; ++i)
+	const int objcount = objpool->count;
+	for (int i = 0; i < objcount; ++i)
 	{
-		int j = (i + threadpid) % objpool->count;
+		int j = (i + threadpid) % objcount;
 		if (objpool->list[j] == NULL)
 		{
 			objpool->list[j] = obj;
