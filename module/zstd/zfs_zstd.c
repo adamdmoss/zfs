@@ -197,14 +197,14 @@ static void objpool_destroy(objpool_t *const objpool);
 static void* obj_grab(objpool_t *const objpool);
 static void obj_ungrab(objpool_t *const objpool, void* const obj);
 
-static void __init
+static void
 objpool_reset_idle_timer(objpool_t *const objpool)
 {
 	const int64_t now_jiffy = ddi_get_lbolt64();
 	objpool->last_accessed_jiffy = now_jiffy;
 }
 
-static void __init
+static void
 objpool_init(objpool_t *const objpool)
 {
 	mutex_init(&objpool->listlock, NULL, MUTEX_DEFAULT, NULL);
@@ -214,7 +214,7 @@ objpool_init(objpool_t *const objpool)
 	objpool_reset_idle_timer(objpool);
 }
 
-static void __exit
+static void
 objpool_clearunused(objpool_t *const objpool)
 {
 	mutex_enter(&objpool->listlock);
@@ -245,7 +245,6 @@ objpool_clearunused(objpool_t *const objpool)
 	}
 	objpool->count = 0;
 	mutex_exit(&objpool->listlock);
-	objpool_reset_idle_timer(objpool);
 }
 
 static void
@@ -259,6 +258,7 @@ objpool_reap(objpool_t *const objpool)
 	{
 		//aprint("actually doing idle-reap for pool \"%s\"\n", objpool->pool_name);
 		objpool_clearunused(objpool);
+		objpool_reset_idle_timer(objpool);
 	}
 }
 
