@@ -1,0 +1,11 @@
+#sudo apt remove `for file in *.deb; do (echo $file|sed -E 's/([^_]+)_.+/\1/'); done`
+
+sudo echo
+
+#rm -rf zfs-dkms* *.rpm *.deb;./autogen.sh && ./configure --with-config=srpm && make -j1 pkg-utils deb-dkms && (rm zfs-{dracut,initramfs,test}*.deb pyth*.deb&& sudo apt remove `for file in *.deb; do (echo $file|sed -E 's/([^_]+)_.+/\1/'); done` &&for file in *.deb; do sudo gdebi -n $file || (echo NOOOOO ; cat </dev/stdin); done)
+
+rm -rf zfs-dkms* *.rpm *.deb;./autogen.sh && ./configure --with-config=srpm --enable-debug --enable-debuginfo --enable-debug-kmem --enable-debug-kmem-tracking  --disable-silent-rules&& make -j12 pkg-utils deb-dkms && (sudo zstd --rm -9 /lib/modules/*/kernel/zfs/*.ko;sudo dkms remove --force-version-override --verbose zfs/2.0.0 --all && sudo apt remove `for file in *.deb; do (echo $file|sed -E 's/([^_]+)_.+/\1/'); done` ;for file in *.deb; do sudo gdebi -n $file || (echo NOOOOO ; cat </dev/stdin); done) && sudo dkms install --force-version-override --force zfs/2.0.0 && rm *.deb *.rpm zfs-?.?.?.tar.gz
+sudo depmod -a
+
+date
+
