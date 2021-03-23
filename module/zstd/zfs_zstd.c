@@ -115,15 +115,15 @@ static void zstd_free_cb(void *opaque, void *ptr);
 static const ZSTD_customMem zstd_malloc = {
 	zstd_alloc_cb,
 	zstd_free_cb,
-	NULL,
+	(void*)0,
 };
 
 /* Decompression memory handler */
 static const ZSTD_customMem zstd_dctx_malloc = {
 	zstd_alloc_cb,
 	zstd_free_cb,
+	/* "try hard" since a failure on decompression path cascades to user: */
 	(void*)1,
-	/* ^ "try hard" since a failure on decompression path cascades to user */
 };
 
 /* Level map for converting ZFS internal levels to ZSTD levels and vice versa */
@@ -267,7 +267,7 @@ objpool_destroy(objpool_t *const objpool)
 {
 	objpool_clearunused(objpool);
 	VERIFY3U(objpool->count, ==, 0);
-	
+
 	if (objpool->count == 0)
 	{
 		mutex_destroy(&objpool->listlock);
@@ -714,6 +714,8 @@ zstd_alloc_cb(void *opaque, size_t size)
 	const int try_harder = (opaque != NULL);
 	struct zstd_kmem_hdr *z;
 	size_t nbytes = sizeof (*z) + size;
+
+	aprint("zstd_alloc_cb(try_harder=%p, size=%d)\n", opaque, (int)size);
 
 	z = vmem_alloc(nbytes, KM_NOSLEEP);
 	if (!z) {
