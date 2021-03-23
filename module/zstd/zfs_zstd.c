@@ -480,15 +480,17 @@ obj_grab(objpool_t *const objpool)
 
 	void* found = NULL;
 	ZSPINLOCK_LOCK(&objpool->listlock);
-	const int threadpid = (int)getpid();
 	const int objcount = objpool->count;
-	for (int i = 0; i < objcount; ++i)
-	{
-		const int j = (i + threadpid) % objcount;
-		if ((found = objpool->list[j]) != NULL)
+	if (likely(objcount > 0)) {
+		int j = getpid() % objcount;
+		for (int i = objcount; i; --i)
 		{
-			objpool->list[j] = NULL;
-			break;
+			if ((found = objpool->list[j]) != NULL)
+			{
+				objpool->list[j] = NULL;
+				break;
+			}
+			if (unlikely(++j == objcount)) j = 0;
 		}
 	}
 	if (likely(found!=NULL))
@@ -547,16 +549,17 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 
 	ASSERT3P(obj, !=, NULL);
 	ZSPINLOCK_LOCK(&objpool->listlock);
-	const int threadpid = (int)getpid();
 	const int objcount = objpool->count;
-	for (int i = 0; i < objcount; ++i)
+	ASSERT3U(objcount, >, 0);
+	int j = getpid() % objcount;
+	for (int i = objcount; i; --i)
 	{
-		int j = (i + threadpid) % objcount;
 		if (objpool->list[j] == NULL)
 		{
 			objpool->list[j] = obj;
 			break;
 		}
+		if (unlikely(++j == objcount)) j = 0;
 	}
 	ZSPINLOCK_UNLOCK(&objpool->listlock);
 	objpool_reset_idle_timer(objpool);
