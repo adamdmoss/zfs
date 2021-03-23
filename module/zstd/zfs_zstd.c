@@ -52,7 +52,7 @@
 
 
 #if defined(__KERNEL__)
-#if 0 
+#if 0
 extern	int printk(const char *fmt, ...);
 #define aprint printk
 #else
@@ -112,18 +112,18 @@ static void *zstd_alloc_cb(void *opaque, size_t size);
 static void zstd_free_cb(void *opaque, void *ptr);
 
 /* Compression memory handler */
-static const ZSTD_customMem zstd_malloc = {
-	zstd_alloc_cb,
-	zstd_free_cb,
-	(void*)0,
+static const ZSTD_customMem zstd_cctx_custommem = {
+	.customAlloc = zstd_alloc_cb,
+	.customFree = zstd_free_cb,
+	.opaque = (void*)0,
 };
 
 /* Decompression memory handler */
-static const ZSTD_customMem zstd_dctx_malloc = {
-	zstd_alloc_cb,
-	zstd_free_cb,
+static const ZSTD_customMem zstd_dctx_custommem = {
+	.customAlloc = zstd_alloc_cb,
+	.customFree = zstd_free_cb,
 	/* "try hard" since a failure on decompression path cascades to user: */
-	(void*)1,
+	.opaque = (void*)1,
 };
 
 /* Level map for converting ZFS internal levels to ZSTD levels and vice versa */
@@ -173,7 +173,7 @@ static struct zstd_levelmap zstd_levels[] = {
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
 #define NERF_OBJ_POOL 0 /* >1 to skip pool and use raw obj alloc/free always */
-#define GRABAMP 10000 /*>0 to amplify grab/ungrab contention for testing*/
+#define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
 #define OBJPOOL_TIMEOUT_SEC 15
 
@@ -367,7 +367,7 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 static void *
 cctx_alloc(void)
 {
-	return ZSTD_createCCtx_advanced(zstd_malloc);
+	return ZSTD_createCCtx_advanced(zstd_cctx_custommem);
 }
 static void
 cctx_free(void *ptr)
@@ -387,7 +387,7 @@ cctx_reset(void *ptr)
 static void *
 dctx_alloc(void)
 {
-	return ZSTD_createDCtx_advanced(zstd_dctx_malloc);
+	return ZSTD_createDCtx_advanced(zstd_dctx_custommem);
 }
 static void
 dctx_free(void *ptr)
@@ -738,6 +738,7 @@ static void
 zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 {
 	ASSERT3P(ptr, !=, NULL);
+	aprint("zstd_alloc_free(try_harder=%p, ptr=%p)\n", opaque, ptr);
 	struct zstd_kmem_hdr *z = (ptr - sizeof (struct zstd_kmem_hdr));
 	vmem_free(z, z->kmem_size);
 }
