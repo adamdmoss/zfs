@@ -481,21 +481,16 @@ obj_grab(objpool_t *const objpool)
 	void* found = NULL;
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int objcount = objpool->count;
-	if (likely(objcount > 0)) {
-		int j = getpid() % objcount;
-		for (int i = objcount; i; --i)
+	for (int i = 0; i < objcount; ++i)
+	{
+		if ((found = objpool->list[i]) != NULL)
 		{
-			if ((found = objpool->list[j]) != NULL)
-			{
-				objpool->list[j] = NULL;
-				break;
-			}
-			if (unlikely(++j == objcount)) j = 0;
+			objpool->list[i] = NULL;
+			break;
 		}
 	}
 	if (likely(found!=NULL))
 	{
-		// slightly subtle optimization; compressor needs to reset *stream* (only on error), we reset *parameters*
 		objpool->obj_reset(found);
 	}
 	else
@@ -551,15 +546,13 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	ZSPINLOCK_LOCK(&objpool->listlock);
 	const int objcount = objpool->count;
 	ASSERT3U(objcount, >, 0);
-	int j = getpid() % objcount;
-	for (int i = objcount; i; --i)
+	for (int i = 0; i < objcount; ++i)
 	{
-		if (objpool->list[j] == NULL)
+		if (objpool->list[i] == NULL)
 		{
-			objpool->list[j] = obj;
+			objpool->list[i] = obj;
 			break;
 		}
-		if (unlikely(++j == objcount)) j = 0;
 	}
 	ZSPINLOCK_UNLOCK(&objpool->listlock);
 	objpool_reset_idle_timer(objpool);
@@ -581,9 +574,11 @@ cctx_free(void *ptr)
 static void
 cctx_reset(void *ptr)
 {
-	const size_t status = ZSTD_CCtx_reset(ptr, /*ZSTD_reset_session_and_parameters*/ZSTD_reset_parameters);
-	//VERIFY(!ZSTD_isError(status));
-	if (ZSTD_isError(status)) aprint("uh-oh, cctx reset problem1: %s\n", ZSTD_getErrorName(status));
+	/*
+	 * note: compressor needs to reset *stream* only on error,
+	 * we reset *parameters* always
+	 */
+	(void) ZSTD_CCtx_reset(ptr, ZSTD_reset_parameters);
 }
 
 static void *
@@ -599,9 +594,11 @@ dctx_free(void *ptr)
 static void
 dctx_reset(void *ptr)
 {
-	const size_t status = ZSTD_DCtx_reset(ptr, /*ZSTD_reset_session_and_parameters*/ZSTD_reset_parameters);
-	//VERIFY(!ZSTD_isError(status));
-	if (ZSTD_isError(status)) aprint("uh-oh, dctx reset problem1: %s\n", ZSTD_getErrorName(status));
+	/*
+	 * note: decompressor needs to reset *stream* only on error,
+	 * we reset *parameters* always
+	 */
+	(void) ZSTD_DCtx_reset(ptr, ZSTD_reset_parameters);
 }
 
 static objpool_t cctx_pool = {
