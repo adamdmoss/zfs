@@ -709,7 +709,7 @@ zfs_zstd_decompress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 
 /* supplied as custom allocator() to zstd code */
 static void *
-zstd_alloc_cb(void *opaque, size_t size)
+zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 {
 	const int try_harder = (opaque != NULL);
 	struct zstd_kmem_hdr *z;
@@ -738,7 +738,7 @@ static void
 zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 {
 	ASSERT3P(ptr, !=, NULL);
-	aprint("zstd_alloc_free(try_harder=%p, ptr=%p)\n", opaque, ptr);
+	aprint("zstd_free_cb(try_harder=%p, ptr=%p)\n", opaque, ptr);
 	struct zstd_kmem_hdr *z = (ptr - sizeof (struct zstd_kmem_hdr));
 	vmem_free(z, z->kmem_size);
 }
