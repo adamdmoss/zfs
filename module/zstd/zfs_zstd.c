@@ -238,7 +238,8 @@ objpool_clearunused(objpool_t *const objpool)
 		VERIFY3P(objpool->list, !=, NULL);
 		kmem_free(objpool->list, sizeof(void *) * objpool->count);
 		objpool->list = NULL;
-		//aprint("ADAM: pool \"%s\" reap completed, %d entries removed\n", objpool->pool_name, objpool->count);
+		aprint("ADAM: pool \"%s\" reap completed, %d entries removed\n", 
+	        objpool->pool_name, objpool->count);
 	}
 	else
 	{
