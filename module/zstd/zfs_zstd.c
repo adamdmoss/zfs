@@ -175,7 +175,7 @@ static struct zstd_levelmap zstd_levels[] = {
 #define NERF_OBJ_POOL 0 /* >1 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
-#define OBJPOOL_TIMEOUT_SEC 5 /* 60 * 2 */
+#define OBJPOOL_TIMEOUT_SEC 60 * 2
 
 typedef struct {
 	kmutex_t listlock;
@@ -714,7 +714,7 @@ zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 	struct zstd_kmem_hdr *z;
 	size_t nbytes = sizeof (*z) + size;
 
-	aprint("zstd_alloc_cb(try_harder=%p(%d), size=%d)\n", opaque, try_harder, (int)size);
+	//aprint("zstd_alloc_cb(try_harder=%p(%d), size=%d)\n", opaque, try_harder, (int)size);
 
 	z = vmem_alloc(nbytes, KM_NOSLEEP);
 	if (!z) {
@@ -737,7 +737,7 @@ static void
 zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 {
 	ASSERT3P(ptr, !=, NULL);
-	aprint("zstd_free_cb(try_harder=%p(%d), ptr=%p)\n", opaque, opaque != NULL, ptr);
+	//aprint("zstd_free_cb(try_harder=%p(%d), ptr=%p)\n", opaque, opaque != NULL, ptr);
 	struct zstd_kmem_hdr *z = (ptr - sizeof (struct zstd_kmem_hdr));
 	vmem_free(z, z->kmem_size);
 }
