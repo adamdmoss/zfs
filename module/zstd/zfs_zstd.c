@@ -220,15 +220,14 @@ objpool_clearunused(objpool_t *const objpool)
 	mutex_enter(&objpool->listlock);
 	for (int i = 0; i < objpool->count; ++i)
 	{
-		if (NULL == objpool->list[i])
+		if (unlikely(NULL == objpool->list[i]))
 		{
 			// if ANY object is still in use then don't do anything
 			mutex_exit(&objpool->listlock);
-			aprint("ADAM: pool \"%s\" reap aborted, entry#%d still in use\n", objpool->pool_name, i);
+			aprint("ADAM: pool \"%s\" reap aborting, entry#%d still in use\n", objpool->pool_name, i);
 			return;
 		}
 	}
-	aprint("ADAM: pool \"%s\" reap completed, %d entries removed\n", objpool->pool_name, objpool->count);
 	for (int i = 0; i < objpool->count; ++i)
 	{
 		objpool->obj_free(objpool->list[i]);
@@ -238,6 +237,8 @@ objpool_clearunused(objpool_t *const objpool)
 		VERIFY3P(objpool->list, !=, NULL);
 		kmem_free(objpool->list, sizeof(void *) * objpool->count);
 		objpool->list = NULL;
+		aprint("ADAM: pool \"%s\" reap completed, %d entries removed\n", 
+	        objpool->pool_name, objpool->count);
 	}
 	else
 	{
@@ -251,12 +252,10 @@ static void
 objpool_reap(objpool_t *const objpool)
 {
 	int64_t now_jiffy = ddi_get_lbolt64();
-	//aprint("(considering idle-reap for pool \"%s\": now=%lld lastused=%lld reaptime=%lld)\n", objpool->pool_name, (long long int)now_jiffy, (long long int)objpool->last_accessed_jiffy, (long long int)(objpool->last_accessed_jiffy + SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC)));
 	if (objpool->last_accessed_jiffy > now_jiffy /*wrap!*/
 	    || now_jiffy - objpool->last_accessed_jiffy
 		    > SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC))
 	{
-		//aprint("actually doing idle-reap for pool \"%s\"\n", objpool->pool_name);
 		objpool_clearunused(objpool);
 		objpool_reset_idle_timer(objpool);
 	}
@@ -283,8 +282,8 @@ obj_grab(objpool_t *const objpool)
 
 	void* found = NULL;
 	mutex_enter(&objpool->listlock);
-	const int objcount = objpool->count;
-	for (int i = 0; i < objcount; ++i)
+	//const int objcount = objpool->count;
+	for (int i = 0, const int objcount = objpool->count; i < objcount; ++i)
 	{
 		if ((found = objpool->list[i]) != NULL)
 		{
@@ -301,13 +300,13 @@ obj_grab(objpool_t *const objpool)
 		//aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
 		int newlistbytes = sizeof(void *) * (objpool->count + 1);
 		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
-		if (likely(newlist!=NULL))
+		if (newlist!=NULL)
 		{
 			found = objpool->obj_alloc();
-			if (likely(found!=NULL))
+			if (found!=NULL)
 			{
 				newlist[0] = NULL;
-				if (likely(objpool->count > 0))
+				if (objpool->count > 0)
 				{
 					VERIFY3P(objpool->list, !=, NULL);
 					memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
@@ -325,14 +324,14 @@ obj_grab(objpool_t *const objpool)
 			else
 			{
 				kmem_free(newlist, newlistbytes);
-				aprint("ADAM: failed to alloc new %s for list\n", objpool->pool_name);
+				aprint("ADAM: failed to alloc new obj in pool '%s'\n", objpool->pool_name);
 			}
 		}
 		else
 		{
+			/* can't actually happen while using KM_SLEEP, but might want to only use KM_SLEEP on compression path...? (todo?) */
 			aprint("ADAM: failed to alloc larger list\n");
 		}
-		//aprint("ADAM: resulting %s is %p\n", objpool->pool_name, found);
 	}
 	mutex_exit(&objpool->listlock);
 	return found;
@@ -372,7 +371,7 @@ cctx_alloc(void)
 static void
 cctx_free(void *ptr)
 {
-	ZSTD_freeCCtx(ptr);
+	(void) ZSTD_freeCCtx(ptr);
 }
 static void
 cctx_reset(void *ptr)
@@ -392,7 +391,7 @@ dctx_alloc(void)
 static void
 dctx_free(void *ptr)
 {
-	ZSTD_freeDCtx(ptr);
+	(void) ZSTD_freeDCtx(ptr);
 }
 static void
 dctx_reset(void *ptr)
@@ -406,14 +405,14 @@ dctx_reset(void *ptr)
 
 static objpool_t cctx_pool = {
 	.obj_alloc = cctx_alloc,
-	.obj_free = cctx_free,
+	.obj_free  = cctx_free,
 	.obj_reset = cctx_reset,
 	.pool_name = "zstdCctx"
 	};
 
 static objpool_t dctx_pool = {
 	.obj_alloc = dctx_alloc,
-	.obj_free = dctx_free,
+	.obj_free  = dctx_free,
 	.obj_reset = dctx_reset,
 	.pool_name = "zstdDctx"
 	};
@@ -715,7 +714,7 @@ zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 	struct zstd_kmem_hdr *z;
 	size_t nbytes = sizeof (*z) + size;
 
-	aprint("zstd_alloc_cb(try_harder=%p, size=%d)\n", opaque, (int)size);
+	aprint("zstd_alloc_cb(try_harder=%p(%d), size=%d)\n", opaque, try_harder, (int)size);
 
 	z = vmem_alloc(nbytes, KM_NOSLEEP);
 	if (!z) {
@@ -738,7 +737,7 @@ static void
 zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 {
 	ASSERT3P(ptr, !=, NULL);
-	aprint("zstd_free_cb(try_harder=%p, ptr=%p)\n", opaque, ptr);
+	aprint("zstd_free_cb(try_harder=%p(%d), ptr=%p)\n", opaque, opaque != NULL, ptr);
 	struct zstd_kmem_hdr *z = (ptr - sizeof (struct zstd_kmem_hdr));
 	vmem_free(z, z->kmem_size);
 }
