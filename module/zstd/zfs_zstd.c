@@ -175,7 +175,7 @@ static struct zstd_levelmap zstd_levels[] = {
 #define NERF_OBJ_POOL 0 /* >1 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
-#define OBJPOOL_TIMEOUT_SEC 15
+#define OBJPOOL_TIMEOUT_SEC 5 /* 60 * 2 */
 
 typedef struct {
 	kmutex_t listlock;
@@ -200,7 +200,7 @@ static void obj_ungrab(objpool_t *const objpool, void* const obj);
 static void
 objpool_reset_idle_timer(objpool_t *const objpool)
 {
-	const int64_t now_jiffy = ddi_get_lbolt64();
+	int64_t const now_jiffy = ddi_get_lbolt64();
 	objpool->last_accessed_jiffy = now_jiffy;
 }
 
@@ -282,8 +282,8 @@ obj_grab(objpool_t *const objpool)
 
 	void* found = NULL;
 	mutex_enter(&objpool->listlock);
-	//const int objcount = objpool->count;
-	for (int i = 0, const int objcount = objpool->count; i < objcount; ++i)
+	const int objcount = objpool->count;
+	for (int i = 0; i < objcount; ++i)
 	{
 		if ((found = objpool->list[i]) != NULL)
 		{
@@ -346,7 +346,7 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 
 	ASSERT3P(obj, !=, NULL);
 	mutex_enter(&objpool->listlock);
-	const int objcount = objpool->count;
+	int const objcount = objpool->count;
 	ASSERT3U(objcount, >, 0);
 	for (int i = 0; i < objcount; ++i)
 	{
@@ -710,7 +710,7 @@ zfs_zstd_decompress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 static void *
 zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 {
-	const int try_harder = (opaque != NULL);
+	int const try_harder = (opaque != NULL);
 	struct zstd_kmem_hdr *z;
 	size_t nbytes = sizeof (*z) + size;
 
