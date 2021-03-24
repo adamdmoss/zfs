@@ -172,10 +172,10 @@ static struct zstd_levelmap zstd_levels[] = {
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define NERF_OBJ_POOL 0 /* >1 to skip pool and use raw obj alloc/free always */
+#define NERF_OBJ_POOL 0 /* >0 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
-#define OBJPOOL_TIMEOUT_SEC 60 * 2
+#define OBJPOOL_TIMEOUT_SEC 15
 
 typedef struct {
 	kmutex_t listlock;
@@ -329,7 +329,7 @@ obj_grab(objpool_t *const objpool)
 		}
 		else
 		{
-			/* can't actually happen while using KM_SLEEP, but might want to only use KM_SLEEP on compression path...? (todo?) */
+			/* can't actually happen while using KM_SLEEP, but might want to only use KM_SLEEP on decompression path...? (todo?) */
 			aprint("ADAM: failed to alloc larger list\n");
 		}
 	}
