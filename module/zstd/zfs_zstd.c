@@ -172,7 +172,7 @@ static struct zstd_levelmap zstd_levels[] = {
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define NERF_OBJ_POOL 0 /* >0 to skip pool and use raw obj alloc/free always */
+#define NERF_OBJ_POOL 0 /* ==1 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
 #define OBJPOOL_TIMEOUT_SEC 15
@@ -364,9 +364,8 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 		}
 	}
 	mutex_exit(&objpool->listlock);
-	if (likely(got_slot)) {
-		objpool_reset_idle_timer(objpool);
-	} else {
+	objpool_reset_idle_timer(objpool);
+	if (unlikely(!got_slot)) {
 		/*
 		 * If there's no space in the pool to keep it,
 		 * just destroy the object now.
