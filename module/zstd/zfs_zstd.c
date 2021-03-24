@@ -178,6 +178,7 @@ static struct zstd_levelmap zstd_levels[] = {
 #define OBJPOOL_TIMEOUT_SEC 15
 
 typedef struct {
+	/* Access to 'count' and 'list' must hold 'listlock' */
 	kmutex_t listlock;
 	int count;
 	void **list;
@@ -187,7 +188,7 @@ typedef struct {
 	void*(*obj_alloc)(void);
 	void(*obj_free)(void*);
 	void(*obj_reset)(void*);
-	const char*const pool_name;
+	const char* const pool_name;
 } objpool_t;
 
 static void objpool_init(objpool_t *const objpool);
@@ -279,30 +280,30 @@ obj_grab(objpool_t *const objpool)
 	return objpool->obj_alloc();
 #endif
 
-	void* found = NULL;
+	void* grabbed_obj = NULL;
 	mutex_enter(&objpool->listlock);
 	const int objcount = objpool->count;
 	for (int i = 0; i < objcount; ++i)
 	{
-		if ((found = objpool->list[i]) != NULL)
+		if ((grabbed_obj = objpool->list[i]) != NULL)
 		{
 			objpool->list[i] = NULL;
 			break;
 		}
 	}
-	if (likely(found!=NULL))
+	if (likely(grabbed_obj!=NULL))
 	{
-		objpool->obj_reset(found);
+		objpool->obj_reset(grabbed_obj);
 	}
 	else
 	{
 		//aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
-		int newlistbytes = sizeof(void *) * (objpool->count + 1);
-		void **newlist = kmem_alloc(newlistbytes, KM_SLEEP);
-		if (newlist!=NULL)
+		grabbed_obj = objpool->obj_alloc();
+		if (grabbed_obj!=NULL)
 		{
-			found = objpool->obj_alloc();
-			if (found!=NULL)
+			int newlistbytes = sizeof(void *) * (objpool->count + 1);
+			void **newlist = kmem_alloc(newlistbytes, KM_NOSLEEP);
+			if (newlist!=NULL)
 			{
 				newlist[0] = NULL;
 				if (objpool->count > 0)
@@ -318,22 +319,27 @@ obj_grab(objpool_t *const objpool)
 				objpool->list = newlist;
 				++objpool->count;
 				// total success
-				//aprint("ADAM: expanded lists and grabbed new entry %p\n", found);
+				//aprint("ADAM: expanded lists and grabbed new entry %p\n", grabbed_obj);
 			}
 			else
 			{
-				kmem_free(newlist, newlistbytes);
-				aprint("ADAM: failed to alloc new obj in pool '%s'\n", objpool->pool_name);
+				aprint("ADAM: failed to grow pool '%s' - returning obj %p anyway\n", objpool->pool_name, grabbed_obj);
+				/*
+				 * This is okay; we can still return the new object,
+				 * but the next ungrab()'d object might not find a
+				 * spare pool slot (in which case it'll just be
+				 * destroyed cleanly when ungrab()'d).
+				 */
 			}
 		}
 		else
 		{
-			/* can't actually happen while using KM_SLEEP, but might want to only use KM_SLEEP on decompression path...? (todo?) */
-			aprint("ADAM: failed to alloc larger list\n");
+			/* failed to alloc new object; this is okay */
+			aprint("ADAM: failed to alloc new obj in pool '%s'\n", objpool->pool_name);
 		}
 	}
 	mutex_exit(&objpool->listlock);
-	return found;
+	return grabbed_obj;
 }
 
 static void
@@ -347,16 +353,27 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
 	ASSERT3U(objcount, >, 0);
+	boolean_t got_slot = B_FALSE;
 	for (int i = 0; i < objcount; ++i)
 	{
 		if (objpool->list[i] == NULL)
 		{
 			objpool->list[i] = obj;
+			got_slot = B_TRUE;
 			break;
 		}
 	}
 	mutex_exit(&objpool->listlock);
-	objpool_reset_idle_timer(objpool);
+	if (likely(got_slot)) {
+		objpool_reset_idle_timer(objpool);
+	} else {
+		/*
+		 * If there's no space in the pool to keep it,
+		 * just destroy the object now.
+		 */
+		objpool->obj_free(obj);
+		aprint("ADAM: Ungrabbed obj %p with no free pool slot in pool '%s' - destroyed obj.\n", obj, objpool->pool_name);
+	}
 }
 
 /////////////////////////////////////////// OBJECT POOLS
