@@ -66,7 +66,7 @@
  * consuming excessive system or running forever.  If one of these limits is
  * hit, the channel program will be stopped immediately and return from
  * zcp_eval() with an error code. No attempt will be made to roll back or undo
- * any changes made by the channel program before the error occured.
+ * any changes made by the channel program before the error occurred.
  * Consumers invoking zcp_eval() from elsewhere in the kernel may pass a time
  * limit of 0, disabling the time limit.
  *
@@ -77,7 +77,7 @@
  * In place of a return value, an error message will also be returned in the
  * 'result' nvlist containing information about the error. No attempt will be
  * made to roll back or undo any changes made by the channel program before the
- * error occured.
+ * error occurred.
  *
  * 3. If an error occurs inside a ZFS library call which returns an error code,
  * the error is returned to the Lua script to be handled as desired.
@@ -100,6 +100,7 @@
 #include <sys/zcp_iter.h>
 #include <sys/zcp_prop.h>
 #include <sys/zcp_global.h>
+#include <sys/zvol.h>
 
 #ifndef KM_NORMALPRI
 #define	KM_NORMALPRI	0
@@ -160,7 +161,7 @@ zcp_argerror(lua_State *state, int narg, const char *msg, ...)
  * of a function call.
  *
  * If an error occurs, the cleanup function will be invoked exactly once and
- * then unreigstered.
+ * then unregistered.
  *
  * Returns the registered cleanup handler so the caller can deregister it
  * if no error occurs.
@@ -395,7 +396,7 @@ zcp_lua_to_nvlist_impl(lua_State *state, int index, nvlist_t *nvl,
 	case LUA_TTABLE: {
 		nvlist_t *value_nvl = zcp_table_to_nvlist(state, index, depth);
 		if (value_nvl == NULL)
-			return (EINVAL);
+			return (SET_ERROR(EINVAL));
 
 		fnvlist_add_nvlist(nvl, key, value_nvl);
 		fnvlist_free(value_nvl);
@@ -405,7 +406,7 @@ zcp_lua_to_nvlist_impl(lua_State *state, int index, nvlist_t *nvl,
 		(void) lua_pushfstring(state,
 		    "Invalid value type '%s' for key '%s'",
 		    lua_typename(state, lua_type(state, index)), key);
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 
 	return (0);
@@ -584,7 +585,7 @@ zcp_nvpair_value_to_lua(lua_State *state, nvpair_t *pair,
 			    "Unhandled nvpair type %d for key '%s'",
 			    nvpair_type(pair), nvpair_name(pair));
 		}
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 	}
 	return (err);
@@ -721,8 +722,6 @@ static void *
 zcp_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
 	zcp_alloc_arg_t *allocargs = ud;
-	int flags = (allocargs->aa_must_succeed) ?
-	    KM_SLEEP : (KM_NOSLEEP | KM_NORMALPRI);
 
 	if (nsize == 0) {
 		if (ptr != NULL) {
@@ -745,10 +744,7 @@ zcp_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 			return (NULL);
 		}
 
-		allocbuf = vmem_alloc(allocsize, flags);
-		if (allocbuf == NULL) {
-			return (NULL);
-		}
+		allocbuf = vmem_alloc(allocsize, KM_SLEEP);
 		allocargs->aa_alloc_remaining -= allocsize;
 
 		*allocbuf = allocsize;
@@ -1149,12 +1145,14 @@ zcp_eval(const char *poolname, const char *program, boolean_t sync,
 	runinfo.zri_outnvl = outnvl;
 	runinfo.zri_result = 0;
 	runinfo.zri_cred = CRED();
+	runinfo.zri_proc = curproc;
 	runinfo.zri_timed_out = B_FALSE;
 	runinfo.zri_canceled = B_FALSE;
 	runinfo.zri_sync = sync;
 	runinfo.zri_space_used = 0;
 	runinfo.zri_curinstrs = 0;
 	runinfo.zri_maxinstrs = instrlimit;
+	runinfo.zri_new_zvols = fnvlist_alloc();
 
 	if (sync) {
 		err = dsl_sync_task_sig(poolname, NULL, zcp_eval_sync,
@@ -1165,6 +1163,16 @@ zcp_eval(const char *poolname, const char *program, boolean_t sync,
 		zcp_eval_open(&runinfo, poolname);
 	}
 	lua_close(state);
+
+	/*
+	 * Create device minor nodes for any new zvols.
+	 */
+	for (nvpair_t *pair = nvlist_next_nvpair(runinfo.zri_new_zvols, NULL);
+	    pair != NULL;
+	    pair = nvlist_next_nvpair(runinfo.zri_new_zvols, pair)) {
+		zvol_create_minor(nvpair_name(pair));
+	}
+	fnvlist_free(runinfo.zri_new_zvols);
 
 	return (runinfo.zri_result);
 }
@@ -1434,14 +1442,10 @@ zcp_parse_args(lua_State *state, const char *fname, const zcp_arg_t *pargs,
 	}
 }
 
-#if defined(_KERNEL)
 /* BEGIN CSTYLED */
-module_param(zfs_lua_max_instrlimit, ulong, 0644);
-MODULE_PARM_DESC(zfs_lua_max_instrlimit,
+ZFS_MODULE_PARAM(zfs_lua, zfs_lua_, max_instrlimit, ULONG, ZMOD_RW,
 	"Max instruction limit that can be specified for a channel program");
 
-module_param(zfs_lua_max_memlimit, ulong, 0644);
-MODULE_PARM_DESC(zfs_lua_max_memlimit,
+ZFS_MODULE_PARAM(zfs_lua, zfs_lua_, max_memlimit, ULONG, ZMOD_RW,
 	"Max memory limit that can be specified for a channel program");
 /* END CSTYLED */
-#endif

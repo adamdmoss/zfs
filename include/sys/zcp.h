@@ -75,6 +75,7 @@ typedef struct zcp_run_info {
 	 * rather than the 'current' thread's.
 	 */
 	cred_t		*zri_cred;
+	proc_t		*zri_proc;
 
 	/*
 	 * The tx in which this channel program is running.
@@ -132,6 +133,14 @@ typedef struct zcp_run_info {
 	nvlist_t	*zri_outnvl;
 
 	/*
+	 * The keys of this nvlist are datasets which may be zvols and may need
+	 * to have device minor nodes created.  This information is passed from
+	 * syncing context (where the zvol is created) to open context (where we
+	 * create the minor nodes).
+	 */
+	nvlist_t	*zri_new_zvols;
+
+	/*
 	 * The errno number returned to caller of zcp_eval().
 	 */
 	int		zri_result;
@@ -149,7 +158,7 @@ typedef struct zcp_arg {
 	/*
 	 * The name of this argument. For keyword arguments this is the name
 	 * functions will use to set the argument. For positional arguments
-	 * the name has no programatic meaning, but will appear in error
+	 * the name has no programmatic meaning, but will appear in error
 	 * messages and help output.
 	 */
 	const char *za_name;

@@ -92,11 +92,6 @@ static crypto_mech_info_t aes_mech_info_tab[] = {
 	    AES_MIN_KEY_BYTES, AES_MAX_KEY_BYTES, CRYPTO_KEYSIZE_UNIT_IN_BYTES}
 };
 
-/* operations are in-place if the output buffer is NULL */
-#define	AES_ARG_INPLACE(input, output)				\
-	if ((output) == NULL)					\
-		(output) = (input);
-
 static void aes_provider_status(crypto_provider_handle_t, uint_t *);
 
 static crypto_control_ops_t aes_control_ops = {
@@ -206,35 +201,9 @@ aes_mod_init(void)
 {
 	int ret;
 
-#if defined(_KERNEL)
-	/*
-	 * Determine the fastest available implementation.  The benchmarks
-	 * are run in dedicated kernel threads to allow Linux 5.0+ kernels
-	 * to use SIMD operations.  If for some reason this isn't possible,
-	 * fallback to the generic implementations.  See the comment in
-	 * include/linux/simd_x86.h for additional details.  Additionally,
-	 * this has the benefit of allowing them to be run in parallel.
-	 */
-	taskqid_t aes_id = taskq_dispatch(system_taskq, aes_impl_init,
-	    NULL, TQ_SLEEP);
-	taskqid_t gcm_id = taskq_dispatch(system_taskq, gcm_impl_init,
-	    NULL, TQ_SLEEP);
-
-	if (aes_id != TASKQID_INVALID) {
-		taskq_wait_id(system_taskq, aes_id);
-	} else {
-		aes_impl_init(NULL);
-	}
-
-	if (gcm_id != TASKQID_INVALID) {
-		taskq_wait_id(system_taskq, gcm_id);
-	} else {
-		gcm_impl_init(NULL);
-	}
-#else
-	aes_impl_init(NULL);
-	gcm_impl_init(NULL);
-#endif
+	/* Determine the fastest available implementation. */
+	aes_impl_init();
+	gcm_impl_init();
 
 	if ((ret = mod_install(&modlinkage)) != 0)
 		return (ret);
@@ -439,7 +408,7 @@ aes_encrypt(crypto_ctx_t *ctx, crypto_data_t *plaintext,
 	    == 0) && (plaintext->cd_length & (AES_BLOCK_LEN - 1)) != 0)
 		return (CRYPTO_DATA_LEN_RANGE);
 
-	AES_ARG_INPLACE(plaintext, ciphertext);
+	ASSERT(ciphertext != NULL);
 
 	/*
 	 * We need to just return the length needed to store the output.
@@ -556,7 +525,7 @@ aes_decrypt(crypto_ctx_t *ctx, crypto_data_t *ciphertext,
 		return (CRYPTO_ENCRYPTED_DATA_LEN_RANGE);
 	}
 
-	AES_ARG_INPLACE(ciphertext, plaintext);
+	ASSERT(plaintext != NULL);
 
 	/*
 	 * Return length needed to store the output.
@@ -661,7 +630,7 @@ aes_encrypt_update(crypto_ctx_t *ctx, crypto_data_t *plaintext,
 	ASSERT(ctx->cc_provider_private != NULL);
 	aes_ctx = ctx->cc_provider_private;
 
-	AES_ARG_INPLACE(plaintext, ciphertext);
+	ASSERT(ciphertext != NULL);
 
 	/* compute number of bytes that will hold the ciphertext */
 	out_len = aes_ctx->ac_remainder_len;
@@ -731,7 +700,7 @@ aes_decrypt_update(crypto_ctx_t *ctx, crypto_data_t *ciphertext,
 	ASSERT(ctx->cc_provider_private != NULL);
 	aes_ctx = ctx->cc_provider_private;
 
-	AES_ARG_INPLACE(ciphertext, plaintext);
+	ASSERT(plaintext != NULL);
 
 	/*
 	 * Compute number of bytes that will hold the plaintext.
@@ -973,7 +942,7 @@ aes_encrypt_atomic(crypto_provider_handle_t provider,
 	size_t length_needed;
 	int ret;
 
-	AES_ARG_INPLACE(plaintext, ciphertext);
+	ASSERT(ciphertext != NULL);
 
 	/*
 	 * CTR, CCM, GCM, and GMAC modes do not require that plaintext
@@ -1082,6 +1051,16 @@ out:
 		bzero(aes_ctx.ac_keysched, aes_ctx.ac_keysched_len);
 		kmem_free(aes_ctx.ac_keysched, aes_ctx.ac_keysched_len);
 	}
+#ifdef CAN_USE_GCM_ASM
+	if (aes_ctx.ac_flags & (GCM_MODE|GMAC_MODE) &&
+	    ((gcm_ctx_t *)&aes_ctx)->gcm_Htable != NULL) {
+
+		gcm_ctx_t *ctx = (gcm_ctx_t *)&aes_ctx;
+
+		bzero(ctx->gcm_Htable, ctx->gcm_htab_len);
+		kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
+	}
+#endif
 
 	return (ret);
 }
@@ -1099,7 +1078,7 @@ aes_decrypt_atomic(crypto_provider_handle_t provider,
 	size_t length_needed;
 	int ret;
 
-	AES_ARG_INPLACE(ciphertext, plaintext);
+	ASSERT(plaintext != NULL);
 
 	/*
 	 * CCM, GCM, CTR, and GMAC modes do not require that ciphertext
@@ -1240,6 +1219,14 @@ out:
 			vmem_free(((gcm_ctx_t *)&aes_ctx)->gcm_pt_buf,
 			    ((gcm_ctx_t *)&aes_ctx)->gcm_pt_buf_len);
 		}
+#ifdef CAN_USE_GCM_ASM
+		if (((gcm_ctx_t *)&aes_ctx)->gcm_Htable != NULL) {
+			gcm_ctx_t *ctx = (gcm_ctx_t *)&aes_ctx;
+
+			bzero(ctx->gcm_Htable, ctx->gcm_htab_len);
+			kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
+		}
+#endif
 	}
 
 	return (ret);

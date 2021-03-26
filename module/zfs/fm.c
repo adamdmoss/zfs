@@ -31,7 +31,7 @@
  * Name-Value Pair Lists
  *
  * The embodiment of an FMA protocol element (event, fmri or authority) is a
- * name-value pair list (nvlist_t).  FMA-specific nvlist construtor and
+ * name-value pair list (nvlist_t).  FMA-specific nvlist constructor and
  * destructor functions, fm_nvlist_create() and fm_nvlist_destroy(), are used
  * to create an nvpair list using custom allocators.  Callers may choose to
  * allocate either from the kernel memory allocator, or from a preallocated
@@ -67,8 +67,6 @@
 #include <sys/atomic.h>
 #include <sys/condvar.h>
 #include <sys/console.h>
-#include <sys/kobj.h>
-#include <sys/time.h>
 #include <sys/zfs_ioctl.h>
 
 int zfs_zevent_len_max = 0;
@@ -105,13 +103,15 @@ struct erpt_kstat {
 	kstat_named_t	erpt_set_failed;	/* num erpt set failures */
 	kstat_named_t	fmri_set_failed;	/* num fmri set failures */
 	kstat_named_t	payload_set_failed;	/* num payload set failures */
+	kstat_named_t	erpt_duplicates;	/* num duplicate erpts */
 };
 
 static struct erpt_kstat erpt_kstat_data = {
 	{ "erpt-dropped", KSTAT_DATA_UINT64 },
 	{ "erpt-set-failed", KSTAT_DATA_UINT64 },
 	{ "fmri-set-failed", KSTAT_DATA_UINT64 },
-	{ "payload-set-failed", KSTAT_DATA_UINT64 }
+	{ "payload-set-failed", KSTAT_DATA_UINT64 },
+	{ "erpt-duplicates", KSTAT_DATA_UINT64 }
 };
 
 kstat_t *fm_ksp;
@@ -569,6 +569,12 @@ out:
 	return (error);
 }
 
+void
+zfs_zevent_track_duplicate(void)
+{
+	atomic_inc_64(&erpt_kstat_data.erpt_duplicates.value.ui64);
+}
+
 static int
 zfs_zevent_minor_to_state(minor_t minor, zfs_zevent_t **ze)
 {
@@ -582,14 +588,9 @@ zfs_zevent_minor_to_state(minor_t minor, zfs_zevent_t **ze)
 int
 zfs_zevent_fd_hold(int fd, minor_t *minorp, zfs_zevent_t **ze)
 {
-	file_t *fp;
 	int error;
 
-	fp = getf(fd);
-	if (fp == NULL)
-		return (SET_ERROR(EBADF));
-
-	error = zfsdev_getminor(fp->f_file, minorp);
+	error = zfsdev_getminor(fd, minorp);
 	if (error == 0)
 		error = zfs_zevent_minor_to_state(*minorp, ze);
 
@@ -602,7 +603,7 @@ zfs_zevent_fd_hold(int fd, minor_t *minorp, zfs_zevent_t **ze)
 void
 zfs_zevent_fd_rele(int fd)
 {
-	releasef(fd);
+	zfs_file_put(fd);
 }
 
 /*
@@ -784,7 +785,7 @@ zfs_zevent_destroy(zfs_zevent_t *ze)
 #endif /* _KERNEL */
 
 /*
- * Wrapppers for FM nvlist allocators
+ * Wrappers for FM nvlist allocators
  */
 /* ARGSUSED */
 static void *
@@ -1613,9 +1614,7 @@ fm_erpt_dropped_increment(void)
 {
 	atomic_inc_64(&ratelimit_dropped);
 }
-#endif
 
-#ifdef _KERNEL
 void
 fm_init(void)
 {
@@ -1641,12 +1640,16 @@ fm_init(void)
 	list_create(&zevent_list, sizeof (zevent_t),
 	    offsetof(zevent_t, ev_node));
 	cv_init(&zevent_cv, NULL, CV_DEFAULT, NULL);
+
+	zfs_ereport_init();
 }
 
 void
 fm_fini(void)
 {
 	int count;
+
+	zfs_ereport_fini();
 
 	zfs_zevent_drain_all(&count);
 
@@ -1670,14 +1673,13 @@ fm_fini(void)
 		fm_ksp = NULL;
 	}
 }
-
-module_param(zfs_zevent_len_max, int, 0644);
-MODULE_PARM_DESC(zfs_zevent_len_max, "Max event queue length");
-
-module_param(zfs_zevent_cols, int, 0644);
-MODULE_PARM_DESC(zfs_zevent_cols, "Max event column width");
-
-module_param(zfs_zevent_console, int, 0644);
-MODULE_PARM_DESC(zfs_zevent_console, "Log events to the console");
-
 #endif /* _KERNEL */
+
+ZFS_MODULE_PARAM(zfs_zevent, zfs_zevent_, len_max, INT, ZMOD_RW,
+	"Max event queue length");
+
+ZFS_MODULE_PARAM(zfs_zevent, zfs_zevent_, cols, INT, ZMOD_RW,
+	"Max event column width");
+
+ZFS_MODULE_PARAM(zfs_zevent, zfs_zevent_, console, INT, ZMOD_RW,
+	"Log events to the console");

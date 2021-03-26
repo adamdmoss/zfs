@@ -36,6 +36,7 @@
 #include <sys/spa_checkpoint.h>
 #include <sys/spa_log_spacemap.h>
 #include <sys/vdev.h>
+#include <sys/vdev_rebuild.h>
 #include <sys/vdev_removal.h>
 #include <sys/metaslab.h>
 #include <sys/dmu.h>
@@ -43,7 +44,7 @@
 #include <sys/uberblock_impl.h>
 #include <sys/zfs_context.h>
 #include <sys/avl.h>
-#include <sys/refcount.h>
+#include <sys/zfs_refcount.h>
 #include <sys/bplist.h>
 #include <sys/bpobj.h>
 #include <sys/dsl_crypt.h>
@@ -216,6 +217,7 @@ struct spa {
 	spa_load_state_t spa_load_state;	/* current load operation */
 	boolean_t	spa_indirect_vdevs_loaded; /* mappings loaded? */
 	boolean_t	spa_trust_config;	/* do we trust vdev tree? */
+	boolean_t	spa_is_splitting;	/* in the middle of a split? */
 	spa_config_source_t spa_config_source;	/* where config comes from? */
 	uint64_t	spa_import_flags;	/* import specific flags */
 	spa_taskqs_t	spa_zio_taskq[ZIO_TYPES][ZIO_TASKQ_TYPES];
@@ -224,6 +226,7 @@ struct spa {
 	boolean_t	spa_is_exporting;	/* true while exporting pool */
 	metaslab_class_t *spa_normal_class;	/* normal data class */
 	metaslab_class_t *spa_log_class;	/* intent log data class */
+	metaslab_class_t *spa_embedded_log_class; /* log on normal vdevs */
 	metaslab_class_t *spa_special_class;	/* special allocation class */
 	metaslab_class_t *spa_dedup_class;	/* dedup allocation class */
 	uint64_t	spa_first_txg;		/* first txg after spa_open() */
@@ -238,8 +241,9 @@ struct spa {
 	kcondvar_t	spa_evicting_os_cv;	/* Objset Eviction Completion */
 	txg_list_t	spa_vdev_txg_list;	/* per-txg dirty vdev list */
 	vdev_t		*spa_root_vdev;		/* top-level vdev container */
-	int		spa_min_ashift;		/* of vdevs in normal class */
-	int		spa_max_ashift;		/* of vdevs in normal class */
+	uint64_t	spa_min_ashift;		/* of vdevs in normal class */
+	uint64_t	spa_max_ashift;		/* of vdevs in normal class */
+	uint64_t	spa_min_alloc;		/* of vdevs in normal class */
 	uint64_t	spa_config_guid;	/* config pool guid */
 	uint64_t	spa_load_guid;		/* spa_load initialized guid */
 	uint64_t	spa_last_synced_guid;	/* last synced guid */
@@ -272,7 +276,9 @@ struct spa {
 	boolean_t	spa_extreme_rewind;	/* rewind past deferred frees */
 	kmutex_t	spa_scrub_lock;		/* resilver/scrub lock */
 	uint64_t	spa_scrub_inflight;	/* in-flight scrub bytes */
-	uint64_t	spa_load_verify_ios;	/* in-flight verification IOs */
+
+	/* in-flight verification bytes */
+	uint64_t	spa_load_verify_bytes;
 	kcondvar_t	spa_scrub_io_cv;	/* scrub I/O completion */
 	uint8_t		spa_scrub_active;	/* active or suspended? */
 	uint8_t		spa_scrub_type;		/* type of scrub we're doing */
@@ -360,7 +366,7 @@ struct spa {
 	uint8_t		spa_claiming;		/* pool is doing zil_claim() */
 	boolean_t	spa_is_root;		/* pool is root */
 	int		spa_minref;		/* num refs when first opened */
-	int		spa_mode;		/* FREAD | FWRITE */
+	spa_mode_t	spa_mode;		/* SPA_MODE_{READ|WRITE} */
 	spa_log_state_t spa_log_state;		/* log state */
 	uint64_t	spa_autoexpand;		/* lun expansion on/off */
 	ddt_t		*spa_ddt[ZIO_CHECKSUM_FUNCTIONS]; /* in-core DDTs */
@@ -373,7 +379,7 @@ struct spa {
 	kcondvar_t	spa_proc_cv;		/* spa_proc_state transitions */
 	spa_proc_state_t spa_proc_state;	/* see definition */
 	proc_t		*spa_proc;		/* "zpool-poolname" process */
-	uint64_t	spa_did;		/* if procp != p0, did of t1 */
+	uintptr_t	spa_did;		/* if procp != p0, did of t1 */
 	boolean_t	spa_autoreplace;	/* autoreplace set in open */
 	int		spa_vdev_locks;		/* locks grabbed */
 	uint64_t	spa_creation_version;	/* version at pool creation */
@@ -409,6 +415,16 @@ struct spa {
 	mmp_thread_t	spa_mmp;		/* multihost mmp thread */
 	list_t		spa_leaf_list;		/* list of leaf vdevs */
 	uint64_t	spa_leaf_list_gen;	/* track leaf_list changes */
+	uint32_t	spa_hostid;		/* cached system hostid */
+
+	/* synchronization for threads in spa_wait */
+	kmutex_t	spa_activities_lock;
+	kcondvar_t	spa_activities_cv;
+	kcondvar_t	spa_waiters_cv;
+	int		spa_waiters;		/* number of waiting threads */
+	boolean_t	spa_waiters_cancel;	/* waiters should return */
+
+	char		*spa_compatibility;	/* compatibility file(s) */
 
 	/*
 	 * spa_refcount & spa_config_lock must be the last elements
@@ -423,7 +439,8 @@ struct spa {
 };
 
 extern char *spa_config_path;
-
+extern char *zfs_deadman_failmode;
+extern int spa_slop_shift;
 extern void spa_taskq_dispatch_ent(spa_t *spa, zio_type_t t, zio_taskq_type_t q,
     task_func_t *func, void *arg, uint_t flags, taskq_ent_t *ent);
 extern void spa_taskq_dispatch_sync(spa_t *, zio_type_t t, zio_taskq_type_t q,
@@ -433,7 +450,10 @@ extern void spa_load_l2cache(spa_t *spa);
 extern sysevent_t *spa_event_create(spa_t *spa, vdev_t *vd, nvlist_t *hist_nvl,
     const char *name);
 extern void spa_event_post(sysevent_t *ev);
-
+extern int param_set_deadman_failmode_common(const char *val);
+extern void spa_set_deadman_synctime(hrtime_t ns);
+extern void spa_set_deadman_ziotime(hrtime_t ns);
+extern const char *spa_history_zone(void);
 
 #ifdef	__cplusplus
 }

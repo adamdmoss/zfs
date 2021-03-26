@@ -42,7 +42,7 @@ function cleanup
 	#
 	# Reset tunable.
 	#
-	log_must set_tunable32 zfs_removal_suspend_progress 0
+	log_must set_tunable32 REMOVAL_SUSPEND_PROGRESS 0
 }
 log_onexit cleanup
 
@@ -55,11 +55,11 @@ log_must default_setup_noexit "$REMOVEDISK"
 
 #
 # Create a file of size 1GB and then do some random writes.
-# Since randwritecomp does 8K writes we do 12500 writes
-# which means we write ~100MB to the vdev.
+# Since randwritecomp does 8K writes we do 25000 writes
+# which means we write ~200MB to the vdev.
 #
 log_must mkfile -n 1g $SAMPLEFILE
-log_must randwritecomp $SAMPLEFILE 12500
+log_must randwritecomp $SAMPLEFILE 25000
 
 #
 # Add second device where all the data will be evacuated.
@@ -67,19 +67,14 @@ log_must randwritecomp $SAMPLEFILE 12500
 log_must zpool add -f $TESTPOOL $NOTREMOVEDISK
 
 #
+# Block removal.
+#
+log_must set_tunable32 REMOVAL_SUSPEND_PROGRESS 1
+
+#
 # Start removal.
 #
 log_must zpool remove $TESTPOOL $REMOVEDISK
-
-#
-# Sleep a bit and hopefully allow removal to copy some data.
-#
-log_must sleep 1
-
-#
-# Block removal.
-#
-log_must set_tunable32 zfs_removal_suspend_progress 1
 
 #
 # Only for debugging purposes in test logs.

@@ -29,9 +29,7 @@
 #include <sys/zfs_debug.h>
 #include <sys/vdev_raidz.h>
 #include <sys/vdev_raidz_impl.h>
-#include <linux/simd.h>
-
-extern boolean_t raidz_will_scalar_work(void);
+#include <sys/simd.h>
 
 /* Opaque implementation with NULL methods to represent original methods */
 static const raidz_impl_ops_t vdev_raidz_original_impl = {
@@ -63,9 +61,12 @@ const raidz_impl_ops_t *raidz_all_maths[] = {
 #if defined(__x86_64) && defined(HAVE_AVX512BW)	/* only x86_64 for now */
 	&vdev_raidz_avx512bw_impl,
 #endif
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__FreeBSD__)
 	&vdev_raidz_aarch64_neon_impl,
 	&vdev_raidz_aarch64_neonx2_impl,
+#endif
+#if defined(__powerpc__) && defined(__altivec__)
+	&vdev_raidz_powerpc_altivec_impl,
 #endif
 };
 
@@ -148,7 +149,7 @@ vdev_raidz_math_get_ops(void)
  * Select parity generation method for raidz_map
  */
 int
-vdev_raidz_math_generate(raidz_map_t *rm)
+vdev_raidz_math_generate(raidz_map_t *rm, raidz_row_t *rr)
 {
 	raidz_gen_f gen_parity = NULL;
 
@@ -173,7 +174,7 @@ vdev_raidz_math_generate(raidz_map_t *rm)
 	if (gen_parity == NULL)
 		return (RAIDZ_ORIGINAL_IMPL);
 
-	gen_parity(rm);
+	gen_parity(rr);
 
 	return (0);
 }
@@ -240,8 +241,8 @@ reconstruct_fun_pqr_sel(raidz_map_t *rm, const int *parity_valid,
  * @nbaddata     - Number of failed data columns
  */
 int
-vdev_raidz_math_reconstruct(raidz_map_t *rm, const int *parity_valid,
-    const int *dt, const int nbaddata)
+vdev_raidz_math_reconstruct(raidz_map_t *rm, raidz_row_t *rr,
+    const int *parity_valid, const int *dt, const int nbaddata)
 {
 	raidz_rec_f rec_fn = NULL;
 
@@ -264,7 +265,7 @@ vdev_raidz_math_reconstruct(raidz_map_t *rm, const int *parity_valid,
 	if (rec_fn == NULL)
 		return (RAIDZ_ORIGINAL_IMPL);
 	else
-		return (rec_fn(rm, dt));
+		return (rec_fn(rr, dt));
 }
 
 const char *raidz_gen_name[] = {
@@ -359,7 +360,7 @@ raidz_math_kstat_addr(kstat_t *ksp, loff_t n)
 #define	BENCH_D_COLS	(8ULL)
 #define	BENCH_COLS	(BENCH_D_COLS + PARITY_PQR)
 #define	BENCH_ZIO_SIZE	(1ULL << SPA_OLD_MAXBLOCKSHIFT)	/* 128 kiB */
-#define	BENCH_NS	MSEC2NSEC(25)			/* 25ms */
+#define	BENCH_NS	MSEC2NSEC(1)			/* 1ms */
 
 typedef void (*benchmark_fn)(raidz_map_t *rm, const int fn);
 
@@ -409,7 +410,7 @@ benchmark_raidz_impl(raidz_map_t *bench_rm, const int fn, benchmark_fn bench_fn)
 		t_start = gethrtime();
 
 		do {
-			for (i = 0; i < 25; i++, run_cnt++)
+			for (i = 0; i < 5; i++, run_cnt++)
 				bench_fn(bench_rm, fn);
 
 			t_diff = gethrtime() - t_start;
@@ -445,7 +446,7 @@ benchmark_raidz_impl(raidz_map_t *bench_rm, const int fn, benchmark_fn bench_fn)
  * Initialize and benchmark all supported implementations.
  */
 static void
-benchmark_raidz(void *arg)
+benchmark_raidz(void)
 {
 	raidz_impl_ops_t *curr_impl;
 	int i, c;
@@ -515,20 +516,10 @@ benchmark_raidz(void *arg)
 void
 vdev_raidz_math_init(void)
 {
-#if defined(_KERNEL)
-	/*
-	 * For 5.0 and latter Linux kernels the fletcher 4 benchmarks are
-	 * run in a kernel threads.  This is needed to take advantage of the
-	 * SIMD functionality, see include/linux/simd_x86.h for details.
-	 */
-	taskqid_t id = taskq_dispatch(system_taskq, benchmark_raidz,
-	    NULL, TQ_SLEEP);
-	if (id != TASKQID_INVALID) {
-		taskq_wait_id(system_taskq, id);
-	} else {
-		benchmark_raidz(NULL);
-	}
+	/* Determine the fastest available implementation. */
+	benchmark_raidz();
 
+#if defined(_KERNEL)
 	/* Install kstats for all implementations */
 	raidz_math_kstat = kstat_create("zfs", 0, "vdev_raidz_bench", "misc",
 	    KSTAT_TYPE_RAW, 0, KSTAT_FLAG_VIRTUAL);
@@ -541,8 +532,6 @@ vdev_raidz_math_init(void)
 		    raidz_math_kstat_addr);
 		kstat_install(raidz_math_kstat);
 	}
-#else
-	benchmark_raidz(NULL);
 #endif
 
 	/* Finish initialization */
@@ -639,8 +628,7 @@ vdev_raidz_impl_set(const char *val)
 	return (err);
 }
 
-#if defined(_KERNEL)
-#include <linux/mod_compat.h>
+#if defined(_KERNEL) && defined(__linux__)
 
 static int
 zfs_vdev_raidz_impl_set(const char *val, zfs_kernel_param_t *kp)

@@ -1,21 +1,9 @@
+include $(top_srcdir)/config/Substfiles.am
+
 hooksdir = /usr/share/initramfs-tools/hooks
 
 hooks_SCRIPTS = \
-	zfs
+	zfs \
+	zfsunlock
 
-EXTRA_DIST = \
-	$(top_srcdir)/contrib/initramfs/hooks/zfs.in
-
-$(hooks_SCRIPTS):%:%.in
-	-$(SED) -e 's,@sbindir\@,$(sbindir),g' \
-		-e 's,@sysconfdir\@,$(sysconfdir),g' \
-		-e 's,@udevdir\@,$(udevdir),g' \
-		-e 's,@udevruledir\@,$(udevruledir),g' \
-		-e 's,@mounthelperdir\@,$(mounthelperdir),g' \
-		$< >'$@'
-
-clean-local::
-	-$(RM) $(hooks_SCRIPTS)
-
-distclean-local::
-	-$(RM) $(hooks_SCRIPTS)
+SUBSTFILES += $(hooks_SCRIPTS)

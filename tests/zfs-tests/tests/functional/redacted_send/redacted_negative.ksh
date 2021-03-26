@@ -45,18 +45,20 @@ log_must zfs snapshot $clone2@snap
 
 # Incompatible flags
 log_must zfs redact $sendfs@snap2 book $clone1@snap
-log_mustnot eval "zfs send -R --redact book $sendfs@snap2 >/dev/null"
+log_mustnot eval "zfs send -R --redact book $sendfs@snap2 >$TEST_BASE_DIR/devnull"
 
 typeset arg
 for arg in "$sendfs" "$clone1#book"; do
-	log_mustnot eval "zfs send --redact book $arg >/dev/null"
+	log_mustnot eval "zfs send --redact book $arg >$TEST_BASE_DIR/devnull"
 done
 
 # Bad redaction list arguments
 log_mustnot zfs redact $sendfs@snap1
 log_mustnot zfs redact $sendfs@snap1 book
 log_mustnot zfs redact $sendfs#book1 book4 $clone1
-log_mustnot eval "zfs send --redact $sendfs#book $sendfs@snap >/dev/null"
+log_mustnot zfs redact $sendfs@snap1 book snap2 snap3
+log_mustnot zfs redact $sendfs@snap1 book @snap2 @snap3
+log_mustnot eval "zfs send --redact $sendfs#book $sendfs@snap >$TEST_BASE_DIR/devnull"
 
 # Redaction snapshots not a descendant of tosnap
 log_mustnot zfs redact $sendfs@snap2 book $sendfs@snap2
@@ -64,7 +66,7 @@ log_must zfs redact $sendfs@snap2 book2 $clone1@snap $clone2@snap
 log_must eval "zfs send --redact book2 $sendfs@snap2 >$stream"
 log_must zfs redact $sendfs@snap2 book3 $clone1@snap $clone2@snap
 log_must eval "zfs send -i $sendfs@snap1 --redact book3 $sendfs@snap2 \
-    >/dev/null"
+    >$TEST_BASE_DIR/devnull"
 log_mustnot zfs redact $sendfs@snap3 $sendfs@snap3 $clone1@snap
 
 # Full redacted sends of redacted datasets are not allowed.
@@ -76,5 +78,17 @@ log_mustnot zfs redact $recvfs@snap book5 $clone3@snap
 
 # Nor may a redacted dataset appear in the redaction list.
 log_mustnot zfs redact testpool2/recvfs@snap2 book7 testpool2/recvfs@snap
+
+# Non-redaction bookmark cannot be sent and produces invalid argument error
+log_must zfs bookmark "$sendfs@snap1" "$sendfs#book8"
+log_must eval "zfs send --redact book8 -i $sendfs@snap1 $sendfs@snap2 2>&1 | head -n 100 | grep 'not a redaction bookmark'"
+
+# Error messages for common usage errors
+log_mustnot_expect "not contain '#'"    zfs redact $sendfs@snap1 \#book $sendfs@snap2
+log_mustnot_expect "not contain '#'"    zfs redact $sendfs@snap1 $sendfs#book $sendfs@snap2
+log_mustnot_expect "full dataset names" zfs redact $sendfs@snap1 book @snap2
+log_mustnot_expect "full dataset names" zfs redact $sendfs@snap1 book @snap2
+log_mustnot_expect "full dataset names" zfs redact $sendfs@snap1 \#book @snap2
+log_mustnot_expect "descendent of snapshot" zfs redact $sendfs@snap2 book $sendfs@snap1
 
 log_pass "Verify that redacted send correctly detects invalid arguments."

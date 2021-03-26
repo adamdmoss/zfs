@@ -16,7 +16,7 @@
 /*
  * Copyright (c) 2014, 2017 by Delphix. All rights reserved.
  * Copyright (c) 2019, loli10K <ezomori.nozomu@gmail.com>. All rights reserved.
- * Copyright (c) 2014, 2019 by Delphix. All rights reserved.
+ * Copyright (c) 2014, 2020 by Delphix. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -27,7 +27,6 @@
 #include <sys/zio.h>
 #include <sys/zio_checksum.h>
 #include <sys/metaslab.h>
-#include <sys/refcount.h>
 #include <sys/dmu.h>
 #include <sys/vdev_indirect_mapping.h>
 #include <sys/dmu_tx.h>
@@ -240,6 +239,7 @@ typedef struct indirect_child {
 	 */
 	struct indirect_child *ic_duplicate;
 	list_node_t ic_node; /* node on is_unique_child */
+	int ic_error; /* set when a child does not contain the data */
 } indirect_child_t;
 
 /*
@@ -315,7 +315,6 @@ vdev_indirect_map_free(zio_t *zio)
 
 static const zio_vsd_ops_t vdev_indirect_vsd_ops = {
 	.vsd_free = vdev_indirect_map_free,
-	.vsd_cksum_report = zio_vsd_default_cksum_report
 };
 
 /*
@@ -421,7 +420,7 @@ vdev_indirect_should_condense(vdev_t *vd)
 	 * If nothing new has been marked obsolete, there is no
 	 * point in condensing.
 	 */
-	ASSERTV(uint64_t obsolete_sm_obj);
+	uint64_t obsolete_sm_obj __maybe_unused;
 	ASSERT0(vdev_obsolete_sm_object(vd, &obsolete_sm_obj));
 	if (vd->vdev_obsolete_sm == NULL) {
 		ASSERT0(obsolete_sm_obj);
@@ -544,7 +543,7 @@ spa_condense_indirect_commit_sync(void *arg, dmu_tx_t *tx)
 {
 	spa_condensing_indirect_t *sci = arg;
 	uint64_t txg = dmu_tx_get_txg(tx);
-	ASSERTV(spa_t *spa = dmu_tx_pool(tx)->dp_spa);
+	spa_t *spa __maybe_unused = dmu_tx_pool(tx)->dp_spa;
 
 	ASSERT(dmu_tx_is_syncing(tx));
 	ASSERT3P(sci, ==, spa->spa_condensing_indirect);
@@ -577,8 +576,7 @@ spa_condense_indirect_commit_entry(spa_t *spa,
 	 */
 	if (list_is_empty(&sci->sci_new_mapping_entries[txgoff])) {
 		dsl_sync_task_nowait(dmu_tx_pool(tx),
-		    spa_condense_indirect_commit_sync, sci,
-		    0, ZFS_SPACE_CHECK_NONE, tx);
+		    spa_condense_indirect_commit_sync, sci, tx);
 	}
 
 	vdev_indirect_mapping_entry_t *vime =
@@ -815,7 +813,7 @@ void
 vdev_indirect_sync_obsolete(vdev_t *vd, dmu_tx_t *tx)
 {
 	spa_t *spa = vd->vdev_spa;
-	ASSERTV(vdev_indirect_config_t *vic = &vd->vdev_indirect_config);
+	vdev_indirect_config_t *vic __maybe_unused = &vd->vdev_indirect_config;
 
 	ASSERT3U(vic->vic_mapping_object, !=, 0);
 	ASSERT(range_tree_space(vd->vdev_obsolete_segments) > 0);
@@ -884,7 +882,8 @@ void
 spa_start_indirect_condensing_thread(spa_t *spa)
 {
 	ASSERT3P(spa->spa_condense_zthr, ==, NULL);
-	spa->spa_condense_zthr = zthr_create(spa_condense_indirect_thread_check,
+	spa->spa_condense_zthr = zthr_create("z_indirect_condense",
+	    spa_condense_indirect_thread_check,
 	    spa_condense_indirect_thread, spa);
 }
 
@@ -950,11 +949,12 @@ vdev_indirect_close(vdev_t *vd)
 /* ARGSUSED */
 static int
 vdev_indirect_open(vdev_t *vd, uint64_t *psize, uint64_t *max_psize,
-    uint64_t *ashift)
+    uint64_t *logical_ashift, uint64_t *physical_ashift)
 {
 	*psize = *max_psize = vd->vdev_asize +
 	    VDEV_LABEL_START_SIZE + VDEV_LABEL_END_SIZE;
-	*ashift = vd->vdev_ashift;
+	*logical_ashift = vd->vdev_ashift;
+	*physical_ashift = vd->vdev_physical_ashift;
 	return (0);
 }
 
@@ -966,7 +966,7 @@ typedef struct remap_segment {
 	list_node_t rs_node;
 } remap_segment_t;
 
-remap_segment_t *
+static remap_segment_t *
 rs_alloc(vdev_t *vd, uint64_t offset, uint64_t asize, uint64_t split_offset)
 {
 	remap_segment_t *rs = kmem_alloc(sizeof (remap_segment_t), KM_SLEEP);
@@ -990,7 +990,7 @@ rs_alloc(vdev_t *vd, uint64_t offset, uint64_t asize, uint64_t split_offset)
  * Finally, since we are doing an allocation, it is up to the caller to
  * free the array allocated in this function.
  */
-vdev_indirect_mapping_entry_phys_t *
+static vdev_indirect_mapping_entry_phys_t *
 vdev_indirect_mapping_duplicate_adjacent_entries(vdev_t *vd, uint64_t offset,
     uint64_t asize, uint64_t *copied_entries)
 {
@@ -1186,7 +1186,7 @@ vdev_indirect_child_io_done(zio_t *zio)
 	pio->io_error = zio_worst_error(pio->io_error, zio->io_error);
 	mutex_exit(&pio->io_lock);
 
-	abd_put(zio->io_abd);
+	abd_free(zio->io_abd);
 }
 
 /*
@@ -1272,15 +1272,14 @@ vdev_indirect_read_all(zio_t *zio)
 				continue;
 
 			/*
-			 * Note, we may read from a child whose DTL
-			 * indicates that the data may not be present here.
-			 * While this might result in a few i/os that will
-			 * likely return incorrect data, it simplifies the
-			 * code since we can treat scrub and resilver
-			 * identically.  (The incorrect data will be
-			 * detected and ignored when we verify the
-			 * checksum.)
+			 * If a child is missing the data, set ic_error. Used
+			 * in vdev_indirect_repair(). We perform the read
+			 * nevertheless which provides the opportunity to
+			 * reconstruct the split block if at all possible.
 			 */
+			if (vdev_dtl_contains(ic->ic_vdev, DTL_MISSING,
+			    zio->io_txg, 1))
+				ic->ic_error = SET_ERROR(ESTALE);
 
 			ic->ic_data = abd_alloc_sametype(zio->io_abd,
 			    is->is_size);
@@ -1298,7 +1297,7 @@ vdev_indirect_read_all(zio_t *zio)
 static void
 vdev_indirect_io_start(zio_t *zio)
 {
-	ASSERTV(spa_t *spa = zio->io_spa);
+	spa_t *spa __maybe_unused = zio->io_spa;
 	indirect_vsd_t *iv = kmem_zalloc(sizeof (*iv), KM_SLEEP);
 	list_create(&iv->iv_splits,
 	    sizeof (indirect_split_t), offsetof(indirect_split_t, is_node));
@@ -1402,7 +1401,7 @@ vdev_indirect_checksum_error(zio_t *zio,
 	zio_bad_cksum_t zbc = {{{ 0 }}};
 	abd_t *bad_abd = ic->ic_data;
 	abd_t *good_abd = is->is_good_child->ic_data;
-	zfs_ereport_post_checksum(zio->io_spa, vd, NULL, zio,
+	(void) zfs_ereport_post_checksum(zio->io_spa, vd, NULL, zio,
 	    is->is_target_offset, is->is_size, good_abd, bad_abd, &zbc);
 }
 
@@ -1410,7 +1409,11 @@ vdev_indirect_checksum_error(zio_t *zio,
  * Issue repair i/os for any incorrect copies.  We do this by comparing
  * each split segment's correct data (is_good_child's ic_data) with each
  * other copy of the data.  If they differ, then we overwrite the bad data
- * with the good copy.  Note that we do this without regard for the DTL's,
+ * with the good copy.  The DTL is checked in vdev_indirect_read_all() and
+ * if a vdev is missing a copy of the data we set ic_error and the read is
+ * performed. This provides the opportunity to reconstruct the split block
+ * if at all possible. ic_error is checked here and if set it suppresses
+ * incrementing the checksum counter. Aside from this DTLs are not checked,
  * which simplifies this code and also issues the optimal number of writes
  * (based on which copies actually read bad data, as opposed to which we
  * think might be wrong).  For the same reason, we always use
@@ -1447,6 +1450,14 @@ vdev_indirect_repair(zio_t *zio)
 			    ZIO_FLAG_IO_REPAIR | ZIO_FLAG_SELF_HEAL,
 			    NULL, NULL));
 
+			/*
+			 * If ic_error is set the current child does not have
+			 * a copy of the data, so suppress incrementing the
+			 * checksum counter.
+			 */
+			if (ic->ic_error == ESTALE)
+				continue;
+
 			vdev_indirect_checksum_error(zio, is, ic);
 		}
 	}
@@ -1473,13 +1484,12 @@ vdev_indirect_all_checksum_errors(zio_t *zio)
 
 			vdev_t *vd = ic->ic_vdev;
 
+			(void) zfs_ereport_post_checksum(zio->io_spa, vd,
+			    NULL, zio, is->is_target_offset, is->is_size,
+			    NULL, NULL, NULL);
 			mutex_enter(&vd->vdev_stat_lock);
 			vd->vdev_stat.vs_checksum_errors++;
 			mutex_exit(&vd->vdev_stat_lock);
-
-			zfs_ereport_post_checksum(zio->io_spa, vd, NULL, zio,
-			    is->is_target_offset, is->is_size,
-			    NULL, NULL, NULL);
 		}
 	}
 }
@@ -1638,7 +1648,7 @@ vdev_indirect_splits_damage(indirect_vsd_t *iv, zio_t *zio)
 			if (ic->ic_data == NULL)
 				continue;
 
-			abd_zero(ic->ic_data, ic->ic_data->abd_size);
+			abd_zero(ic->ic_data, abd_get_size(ic->ic_data));
 		}
 
 		iv->iv_attempts_max *= 2;
@@ -1843,9 +1853,13 @@ vdev_indirect_io_done(zio_t *zio)
 }
 
 vdev_ops_t vdev_indirect_ops = {
+	.vdev_op_init = NULL,
+	.vdev_op_fini = NULL,
 	.vdev_op_open = vdev_indirect_open,
 	.vdev_op_close = vdev_indirect_close,
 	.vdev_op_asize = vdev_default_asize,
+	.vdev_op_min_asize = vdev_default_min_asize,
+	.vdev_op_min_alloc = NULL,
 	.vdev_op_io_start = vdev_indirect_io_start,
 	.vdev_op_io_done = vdev_indirect_io_done,
 	.vdev_op_state_change = NULL,
@@ -1854,12 +1868,15 @@ vdev_ops_t vdev_indirect_ops = {
 	.vdev_op_rele = NULL,
 	.vdev_op_remap = vdev_indirect_remap,
 	.vdev_op_xlate = NULL,
+	.vdev_op_rebuild_asize = NULL,
+	.vdev_op_metaslab_init = NULL,
+	.vdev_op_config_generate = NULL,
+	.vdev_op_nparity = NULL,
+	.vdev_op_ndisks = NULL,
 	.vdev_op_type = VDEV_TYPE_INDIRECT,	/* name of this vdev type */
 	.vdev_op_leaf = B_FALSE			/* leaf vdev */
 };
 
-#if defined(_KERNEL)
-EXPORT_SYMBOL(rs_alloc);
 EXPORT_SYMBOL(spa_condense_fini);
 EXPORT_SYMBOL(spa_start_indirect_condensing_thread);
 EXPORT_SYMBOL(spa_condense_indirect_start_sync);
@@ -1871,25 +1888,21 @@ EXPORT_SYMBOL(vdev_indirect_sync_obsolete);
 EXPORT_SYMBOL(vdev_obsolete_counts_are_precise);
 EXPORT_SYMBOL(vdev_obsolete_sm_object);
 
-module_param(zfs_condense_indirect_vdevs_enable, int, 0644);
-MODULE_PARM_DESC(zfs_condense_indirect_vdevs_enable,
+/* BEGIN CSTYLED */
+ZFS_MODULE_PARAM(zfs_condense, zfs_condense_, indirect_vdevs_enable, INT, ZMOD_RW,
 	"Whether to attempt condensing indirect vdev mappings");
 
-/* CSTYLED */
-module_param(zfs_condense_min_mapping_bytes, ulong, 0644);
-MODULE_PARM_DESC(zfs_condense_min_mapping_bytes,
-	"Minimum size of vdev mapping to condense");
+ZFS_MODULE_PARAM(zfs_condense, zfs_condense_, min_mapping_bytes, ULONG, ZMOD_RW,
+	"Don't bother condensing if the mapping uses less than this amount of "
+	"memory");
 
-/* CSTYLED */
-module_param(zfs_condense_max_obsolete_bytes, ulong, 0644);
-MODULE_PARM_DESC(zfs_condense_max_obsolete_bytes,
+ZFS_MODULE_PARAM(zfs_condense, zfs_condense_, max_obsolete_bytes, ULONG, ZMOD_RW,
 	"Minimum size obsolete spacemap to attempt condensing");
 
-module_param(zfs_condense_indirect_commit_entry_delay_ms, int, 0644);
-MODULE_PARM_DESC(zfs_condense_indirect_commit_entry_delay_ms,
-	"Delay while condensing vdev mapping");
+ZFS_MODULE_PARAM(zfs_condense, zfs_condense_, indirect_commit_entry_delay_ms, INT, ZMOD_RW,
+	"Used by tests to ensure certain actions happen in the middle of a "
+	"condense. A maximum value of 1 should be sufficient.");
 
-module_param(zfs_reconstruct_indirect_combinations_max, int, 0644);
-MODULE_PARM_DESC(zfs_reconstruct_indirect_combinations_max,
+ZFS_MODULE_PARAM(zfs_reconstruct, zfs_reconstruct_, indirect_combinations_max, INT, ZMOD_RW,
 	"Maximum number of combinations when reconstructing split segments");
-#endif
+/* END CSTYLED */

@@ -63,13 +63,10 @@
  * If the device could not be replaced, then the second online attempt will
  * trigger the FMA fault that we skipped earlier.
  *
- * ZFS on Linux porting notes:
- *	Linux udev provides a disk insert for both the disk and the partition
- *
+ * On Linux udev provides a disk insert for both the disk and the partition.
  */
 
 #include <ctype.h>
-#include <devid.h>
 #include <fcntl.h>
 #include <libnvpair.h>
 #include <libzfs.h>
@@ -157,7 +154,7 @@ zfs_unavail_pool(zpool_handle_t *zhp, void *data)
  * 1. physical match with no fs, no partition
  *	tag it top, partition disk
  *
- * 2. physical match again, see partion and tag
+ * 2. physical match again, see partition and tag
  *
  */
 
@@ -192,8 +189,8 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	char rawpath[PATH_MAX], fullpath[PATH_MAX];
 	char devpath[PATH_MAX];
 	int ret;
-	int is_dm = 0;
-	int is_sd = 0;
+	boolean_t is_dm = B_FALSE;
+	boolean_t is_sd = B_FALSE;
 	uint_t c;
 	vdev_stat_t *vs;
 
@@ -221,8 +218,8 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 
 	is_dm = zfs_dev_is_dm(path);
 	zed_log_msg(LOG_INFO, "zfs_process_add: pool '%s' vdev '%s', phys '%s'"
-	    " wholedisk %d, dm %d (%llu)", zpool_get_name(zhp), path,
-	    physpath ? physpath : "NULL", wholedisk, is_dm,
+	    " wholedisk %d, %s dm (guid %llu)", zpool_get_name(zhp), path,
+	    physpath ? physpath : "NULL", wholedisk, is_dm ? "is" : "not",
 	    (long long unsigned int)guid);
 
 	/*
@@ -267,7 +264,7 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	 * testing)
 	 */
 	if (physpath != NULL && strcmp("scsidebug", physpath) == 0)
-		is_sd = 1;
+		is_sd = B_TRUE;
 
 	/*
 	 * If the pool doesn't have the autoreplace property set, then use
@@ -438,7 +435,15 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 		return;
 	}
 
-	ret = zpool_vdev_attach(zhp, fullpath, path, nvroot, B_TRUE);
+	/*
+	 * Prefer sequential resilvering when supported (mirrors and dRAID),
+	 * otherwise fallback to a traditional healing resilver.
+	 */
+	ret = zpool_vdev_attach(zhp, fullpath, path, nvroot, B_TRUE, B_TRUE);
+	if (ret != 0) {
+		ret = zpool_vdev_attach(zhp, fullpath, path, nvroot,
+		    B_TRUE, B_FALSE);
+	}
 
 	zed_log_msg(LOG_INFO, "  zpool_vdev_replace: %s with %s (%s)",
 	    fullpath, path, (ret == 0) ? "no errors" :
@@ -534,7 +539,7 @@ zfs_iter_vdev(zpool_handle_t *zhp, nvlist_t *nvl, void *data)
 	(dp->dd_func)(zhp, nvl, dp->dd_islabeled);
 }
 
-void
+static void
 zfs_enable_ds(void *arg)
 {
 	unavailpool_t *pool = (unavailpool_t *)arg;
@@ -674,7 +679,7 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	    devid, devpath ? devpath : "NULL", is_slice);
 
 	/*
-	 * Iterate over all vdevs looking for a match in the folllowing order:
+	 * Iterate over all vdevs looking for a match in the following order:
 	 * 1. ZPOOL_CONFIG_DEVID (identifies the unique disk)
 	 * 2. ZPOOL_CONFIG_PHYS_PATH (identifies disk physical location).
 	 *
@@ -892,7 +897,7 @@ zfs_enum_pools(void *arg)
  *
  * sent messages from zevents or udev monitor
  *
- * For now, each agent has it's own libzfs instance
+ * For now, each agent has its own libzfs instance
  */
 int
 zfs_slm_init()

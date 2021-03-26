@@ -253,7 +253,7 @@ void
 ddt_object_name(ddt_t *ddt, enum ddt_type type, enum ddt_class class,
     char *name)
 {
-	(void) sprintf(name, DMU_POOL_DDT,
+	(void) snprintf(name, DDT_NAMELEN, DMU_POOL_DDT,
 	    zio_checksum_table[ddt->ddt_checksum].ci_name,
 	    ddt_ops[type]->ddt_op_name, ddt_class_name[class]);
 }
@@ -595,12 +595,6 @@ ddt_decompress(uchar_t *src, void *dst, size_t s_len, size_t d_len)
 }
 
 ddt_t *
-ddt_select_by_checksum(spa_t *spa, enum zio_checksum c)
-{
-	return (spa->spa_ddt[c]);
-}
-
-ddt_t *
 ddt_select(spa_t *spa, const blkptr_t *bp)
 {
 	return (spa->spa_ddt[BP_GET_CHECKSUM(bp)]);
@@ -783,7 +777,7 @@ ddt_entry_compare(const void *x1, const void *x2)
 			break;
 	}
 
-	return (AVL_ISIGN(cmp));
+	return (TREE_ISIGN(cmp));
 }
 
 static ddt_t *
@@ -1187,7 +1181,7 @@ ddt_walk(spa_t *spa, ddt_bookmark_t *ddb, ddt_entry_t *dde)
 	return (SET_ERROR(ENOENT));
 }
 
-#if defined(_KERNEL)
-module_param(zfs_dedup_prefetch, int, 0644);
-MODULE_PARM_DESC(zfs_dedup_prefetch, "Enable prefetching dedup-ed blks");
-#endif
+/* BEGIN CSTYLED */
+ZFS_MODULE_PARAM(zfs_dedup, zfs_dedup_, prefetch, INT, ZMOD_RW,
+	"Enable prefetching dedup-ed blks");
+/* END CSTYLED */

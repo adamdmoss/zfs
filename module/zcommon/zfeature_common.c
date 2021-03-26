@@ -25,6 +25,8 @@
  * Copyright (c) 2013, Joyent, Inc. All rights reserved.
  * Copyright (c) 2014, Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2017, Intel Corporation.
+ * Copyright (c) 2019, Klara Inc.
+ * Copyright (c) 2019, Allan Jude
  */
 
 #ifndef _KERNEL
@@ -36,6 +38,7 @@
 #include <sys/fs/zfs.h>
 #include <sys/inttypes.h>
 #include <sys/types.h>
+#include <sys/param.h>
 #include <sys/zfs_sysfs.h>
 #include "zfeature_common.h"
 
@@ -97,6 +100,8 @@ zfeature_is_supported(const char *guid)
 
 	for (spa_feature_t i = 0; i < SPA_FEATURES; i++) {
 		zfeature_info_t *feature = &spa_feature_table[i];
+		if (!feature->fi_zfs_mod_supported)
+			continue;
 		if (strcmp(guid, feature->fi_guid) == 0)
 			return (B_TRUE);
 	}
@@ -217,8 +222,17 @@ zfs_mod_supported_feature(const char *name)
 	 * libzpool, always supports all the features. libzfs needs to
 	 * query the running module, via sysfs, to determine which
 	 * features are supported.
+	 *
+	 * The equivalent _can_ be done on FreeBSD by way of the sysctl
+	 * tree, but this has not been done yet.  Therefore, we return
+	 * that all features except edonr are supported.
 	 */
-#if defined(_KERNEL) || defined(LIB_ZPOOL_BUILD)
+#if defined(__FreeBSD__)
+	if (strcmp(name, "org.illumos:edonr") == 0)
+		return (B_FALSE);
+	else
+		return (B_TRUE);
+#elif defined(_KERNEL) || defined(LIB_ZPOOL_BUILD)
 	return (B_TRUE);
 #else
 	return (zfs_mod_supported(ZFS_SYSFS_POOL_FEATURES, name));
@@ -256,6 +270,19 @@ zfeature_register(spa_feature_t fid, const char *guid, const char *name,
 	feature->fi_zfs_mod_supported = zfs_mod_supported_feature(guid);
 }
 
+/*
+ * Every feature has a GUID of the form com.example:feature_name.  The
+ * reversed DNS name ensures that the feature's GUID is unique across all ZFS
+ * implementations.  This allows companies to independently develop and
+ * release features.  Examples include org.delphix and org.datto.  Previously,
+ * features developed on one implementation have used that implementation's
+ * domain name (e.g. org.illumos and org.zfsonlinux).  Use of the org.openzfs
+ * domain name is recommended for new features which are developed by the
+ * OpenZFS community and its platforms.  This domain may optionally be used by
+ * companies developing features for initial release through an OpenZFS
+ * implementation.  Use of the org.openzfs domain requires reserving the
+ * feature name in advance with the OpenZFS project.
+ */
 void
 zpool_feature_init(void)
 {
@@ -542,17 +569,35 @@ zpool_feature_init(void)
 	    ZFEATURE_TYPE_BOOLEAN, project_quota_deps);
 	}
 
-	{
 	zfeature_register(SPA_FEATURE_ALLOCATION_CLASSES,
 	    "org.zfsonlinux:allocation_classes", "allocation_classes",
 	    "Support for separate allocation classes.",
 	    ZFEATURE_FLAG_READONLY_COMPAT, ZFEATURE_TYPE_BOOLEAN, NULL);
-	}
 
 	zfeature_register(SPA_FEATURE_RESILVER_DEFER,
 	    "com.datto:resilver_defer", "resilver_defer",
-	    "Support for defering new resilvers when one is already running.",
+	    "Support for deferring new resilvers when one is already running.",
 	    ZFEATURE_FLAG_READONLY_COMPAT, ZFEATURE_TYPE_BOOLEAN, NULL);
+
+	zfeature_register(SPA_FEATURE_DEVICE_REBUILD,
+	    "org.openzfs:device_rebuild", "device_rebuild",
+	    "Support for sequential mirror/dRAID device rebuilds",
+	    ZFEATURE_FLAG_READONLY_COMPAT, ZFEATURE_TYPE_BOOLEAN, NULL);
+
+	{
+	static const spa_feature_t zstd_deps[] = {
+		SPA_FEATURE_EXTENSIBLE_DATASET,
+		SPA_FEATURE_NONE
+	};
+	zfeature_register(SPA_FEATURE_ZSTD_COMPRESS,
+	    "org.freebsd:zstd_compress", "zstd_compress",
+	    "zstd compression algorithm support.",
+	    ZFEATURE_FLAG_PER_DATASET, ZFEATURE_TYPE_BOOLEAN, zstd_deps);
+	}
+
+	zfeature_register(SPA_FEATURE_DRAID,
+	    "org.openzfs:draid", "draid", "Support for distributed spare RAID",
+	    ZFEATURE_FLAG_MOS, ZFEATURE_TYPE_BOOLEAN, NULL);
 }
 
 #if defined(_KERNEL)

@@ -29,7 +29,7 @@ BLOCKSIZE=8192
 origin="$TESTPOOL/$TESTFS"
 
 log_must zfs set compress=on $origin
-log_must zfs set checksum=edonr $origin
+log_must zfs set checksum=skein $origin
 
 log_must zfs set recordsize=8k $origin
 dd if=/dev/urandom of=$TESTDIR/file_8k bs=1024k count=$MEGS oflag=sync \
@@ -64,7 +64,7 @@ log_mustnot vdevs_in_pool $TESTPOOL $REMOVEDISK
 #
 # Normally, we expect nopwrites to avoid allocating new blocks, but
 # after a device has been removed the DVAs will get remapped when
-# a L0's indirect bloock is written. This will negate the effects
+# a L0's indirect block is written. This will negate the effects
 # of nopwrite and should result in new allocations.
 #
 

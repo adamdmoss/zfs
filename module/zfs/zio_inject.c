@@ -113,7 +113,7 @@ freq_triggered(uint32_t frequency)
 		return (B_TRUE);
 
 	/*
-	 * Note: we still handle legacy (unscaled) frequecy values
+	 * Note: we still handle legacy (unscaled) frequency values
 	 */
 	uint32_t maximum = (frequency <= 100) ? 100 : ZI_PERCENTAGE_MAX;
 
@@ -265,6 +265,12 @@ zio_handle_fault_injection(zio_t *zio, int error)
 	if (zio->io_type != ZIO_TYPE_READ)
 		return (0);
 
+	/*
+	 * A rebuild I/O has no checksum to verify.
+	 */
+	if (zio->io_priority == ZIO_PRIORITY_REBUILD && error == ECKSUM)
+		return (0);
+
 	rw_enter(&inject_lock, RW_READER);
 
 	for (handler = list_head(&inject_handlers); handler != NULL;
@@ -339,7 +345,7 @@ zio_handle_label_injection(zio_t *zio, int error)
 static int
 zio_inject_bitflip_cb(void *data, size_t len, void *private)
 {
-	ASSERTV(zio_t *zio = private);
+	zio_t *zio __maybe_unused = private;
 	uint8_t *buffer = data;
 	uint_t byte = spa_get_random(len);
 

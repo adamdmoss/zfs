@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2019 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2020 by Delphix. All rights reserved.
  * Copyright 2012 Milan Jurik. All rights reserved.
  * Copyright (c) 2012, Joyent, Inc. All rights reserved.
  * Copyright (c) 2013 Steven Hartland.  All rights reserved.
@@ -30,6 +30,7 @@
  * Copyright (c) 2019 Datto Inc.
  * Copyright (c) 2019, loli10K <ezomori.nozomu@gmail.com>
  * Copyright 2019 Joyent, Inc.
+ * Copyright (c) 2019, 2020 by Christian Schwarz. All rights reserved.
  */
 
 #include <assert.h>
@@ -52,7 +53,6 @@
 #include <grp.h>
 #include <pwd.h>
 #include <signal.h>
-#include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/mkdev.h>
 #include <sys/mntent.h>
@@ -70,7 +70,6 @@
 #include <zfs_prop.h>
 #include <zfs_deleg.h>
 #include <libzutil.h>
-#include <libuutil.h>
 #ifdef HAVE_IDMAP
 #include <aclutils.h>
 #include <directory.h>
@@ -121,6 +120,12 @@ static int zfs_do_change_key(int argc, char **argv);
 static int zfs_do_project(int argc, char **argv);
 static int zfs_do_version(int argc, char **argv);
 static int zfs_do_redact(int argc, char **argv);
+static int zfs_do_wait(int argc, char **argv);
+
+#ifdef __FreeBSD__
+static int zfs_do_jail(int argc, char **argv);
+static int zfs_do_unjail(int argc, char **argv);
+#endif
 
 /*
  * Enable a reasonable set of defaults for libumem debugging on DEBUG builds.
@@ -176,6 +181,9 @@ typedef enum {
 	HELP_CHANGE_KEY,
 	HELP_VERSION,
 	HELP_REDACT,
+	HELP_JAIL,
+	HELP_UNJAIL,
+	HELP_WAIT,
 } zfs_help_t;
 
 typedef struct zfs_command {
@@ -240,6 +248,12 @@ static zfs_command_t command_table[] = {
 	{ "unload-key",	zfs_do_unload_key,	HELP_UNLOAD_KEY		},
 	{ "change-key",	zfs_do_change_key,	HELP_CHANGE_KEY		},
 	{ "redact",	zfs_do_redact,		HELP_REDACT		},
+	{ "wait",	zfs_do_wait,		HELP_WAIT		},
+
+#ifdef __FreeBSD__
+	{ "jail",	zfs_do_jail,		HELP_JAIL		},
+	{ "unjail",	zfs_do_unjail,		HELP_UNJAIL		},
+#endif
 };
 
 #define	NCOMMAND	(sizeof (command_table) / sizeof (command_table[0]))
@@ -254,7 +268,7 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tclone [-p] [-o property=value] ... "
 		    "<snapshot> <filesystem|volume>\n"));
 	case HELP_CREATE:
-		return (gettext("\tcreate [-Pnpv] [-o property=value] ... "
+		return (gettext("\tcreate [-Pnpuv] [-o property=value] ... "
 		    "<filesystem>\n"
 		    "\tcreate [-Pnpsv] [-b blocksize] [-o property=value] ... "
 		    "-V <size> <volume>\n"));
@@ -285,17 +299,18 @@ get_usage(zfs_help_t idx)
 	case HELP_PROMOTE:
 		return (gettext("\tpromote <clone-filesystem>\n"));
 	case HELP_RECEIVE:
-		return (gettext("\treceive [-vnsFhu] "
+		return (gettext("\treceive [-vMnsFhu] "
 		    "[-o <property>=<value>] ... [-x <property>] ...\n"
 		    "\t    <filesystem|volume|snapshot>\n"
-		    "\treceive [-vnsFhu] [-o <property>=<value>] ... "
+		    "\treceive [-vMnsFhu] [-o <property>=<value>] ... "
 		    "[-x <property>] ... \n"
 		    "\t    [-d | -e] <filesystem>\n"
 		    "\treceive -A <filesystem|volume>\n"));
 	case HELP_RENAME:
 		return (gettext("\trename [-f] <filesystem|volume|snapshot> "
 		    "<filesystem|volume|snapshot>\n"
-		    "\trename [-f] -p <filesystem|volume> <filesystem|volume>\n"
+		    "\trename -p [-f] <filesystem|volume> <filesystem|volume>\n"
+		    "\trename -u [-f] <filesystem> <filesystem>\n"
 		    "\trename -r <snapshot> <snapshot>\n"));
 	case HELP_ROLLBACK:
 		return (gettext("\trollback [-rRf] <snapshot>\n"));
@@ -306,7 +321,8 @@ get_usage(zfs_help_t idx)
 		    "<filesystem|volume|snapshot>\n"
 		    "\tsend [-DnPpvLec] [-i bookmark|snapshot] "
 		    "--redact <bookmark> <snapshot>\n"
-		    "\tsend [-nvPe] -t <receive_resume_token>\n"));
+		    "\tsend [-nvPe] -t <receive_resume_token>\n"
+		    "\tsend [-Pnv] --saved filesystem\n"));
 	case HELP_SET:
 		return (gettext("\tset <property=value> ... "
 		    "<filesystem|volume|snapshot> ...\n"));
@@ -345,16 +361,16 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tuserspace [-Hinp] [-o field[,...]] "
 		    "[-s field] ...\n"
 		    "\t    [-S field] ... [-t type[,...]] "
-		    "<filesystem|snapshot>\n"));
+		    "<filesystem|snapshot|path>\n"));
 	case HELP_GROUPSPACE:
 		return (gettext("\tgroupspace [-Hinp] [-o field[,...]] "
 		    "[-s field] ...\n"
 		    "\t    [-S field] ... [-t type[,...]] "
-		    "<filesystem|snapshot>\n"));
+		    "<filesystem|snapshot|path>\n"));
 	case HELP_PROJECTSPACE:
 		return (gettext("\tprojectspace [-Hp] [-o field[,...]] "
 		    "[-s field] ... \n"
-		    "\t    [-S field] ... <filesystem|snapshot>\n"));
+		    "\t    [-S field] ... <filesystem|snapshot|path>\n"));
 	case HELP_PROJECT:
 		return (gettext("\tproject [-d|-r] <directory|file ...>\n"
 		    "\tproject -c [-0] [-d|-r] [-p id] <directory|file ...>\n"
@@ -370,7 +386,8 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tdiff [-FHt] <snapshot> "
 		    "[snapshot|filesystem]\n"));
 	case HELP_BOOKMARK:
-		return (gettext("\tbookmark <snapshot> <bookmark>\n"));
+		return (gettext("\tbookmark <snapshot|bookmark> "
+		    "<newbookmark>\n"));
 	case HELP_CHANNEL_PROGRAM:
 		return (gettext("\tprogram [-jn] [-t <instruction limit>] "
 		    "[-m <memory limit (b)>]\n"
@@ -383,14 +400,20 @@ get_usage(zfs_help_t idx)
 		    "<-a | filesystem|volume>\n"));
 	case HELP_CHANGE_KEY:
 		return (gettext("\tchange-key [-l] [-o keyformat=<value>]\n"
-		    "\t    [-o keylocation=<value>] [-o pbkfd2iters=<value>]\n"
+		    "\t    [-o keylocation=<value>] [-o pbkdf2iters=<value>]\n"
 		    "\t    <filesystem|volume>\n"
 		    "\tchange-key -i [-l] <filesystem|volume>\n"));
 	case HELP_VERSION:
 		return (gettext("\tversion\n"));
 	case HELP_REDACT:
 		return (gettext("\tredact <snapshot> <bookmark> "
-		    "<redaction_snapshot> ..."));
+		    "<redaction_snapshot> ...\n"));
+	case HELP_JAIL:
+		return (gettext("\tjail <jailid|jailname> <filesystem>\n"));
+	case HELP_UNJAIL:
+		return (gettext("\tunjail <jailid|jailname> <filesystem>\n"));
+	case HELP_WAIT:
+		return (gettext("\twait [-t <activity>] <filesystem>\n"));
 	}
 
 	abort();
@@ -419,7 +442,7 @@ safe_malloc(size_t size)
 	return (data);
 }
 
-void *
+static void *
 safe_realloc(void *data, size_t size)
 {
 	void *newp;
@@ -734,7 +757,7 @@ zfs_mount_and_share(libzfs_handle_t *hdl, const char *dataset, zfs_type_t type)
 	 */
 	if (zfs_prop_valid_for_type(ZFS_PROP_CANMOUNT, type, B_FALSE) &&
 	    zfs_prop_get_int(zhp, ZFS_PROP_CANMOUNT) == ZFS_CANMOUNT_ON) {
-		if (geteuid() != 0) {
+		if (zfs_mount_delegation_check()) {
 			(void) fprintf(stderr, gettext("filesystem "
 			    "successfully created, but it may only be "
 			    "mounted by root\n"));
@@ -748,6 +771,7 @@ zfs_mount_and_share(libzfs_handle_t *hdl, const char *dataset, zfs_type_t type)
 			    "successfully created, but not shared\n"));
 			ret = 1;
 		}
+		zfs_commit_all_shares();
 	}
 
 	zfs_close(zhp);
@@ -867,6 +891,107 @@ usage:
 }
 
 /*
+ * Return a default volblocksize for the pool which always uses more than
+ * half of the data sectors.  This primarily applies to dRAID which always
+ * writes full stripe widths.
+ */
+static uint64_t
+default_volblocksize(zpool_handle_t *zhp, nvlist_t *props)
+{
+	uint64_t volblocksize, asize = SPA_MINBLOCKSIZE;
+	nvlist_t *tree, **vdevs;
+	uint_t nvdevs;
+
+	nvlist_t *config = zpool_get_config(zhp, NULL);
+
+	if (nvlist_lookup_nvlist(config, ZPOOL_CONFIG_VDEV_TREE, &tree) != 0 ||
+	    nvlist_lookup_nvlist_array(tree, ZPOOL_CONFIG_CHILDREN,
+	    &vdevs, &nvdevs) != 0) {
+		return (ZVOL_DEFAULT_BLOCKSIZE);
+	}
+
+	for (int i = 0; i < nvdevs; i++) {
+		nvlist_t *nv = vdevs[i];
+		uint64_t ashift, ndata, nparity;
+
+		if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_ASHIFT, &ashift) != 0)
+			continue;
+
+		if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_DRAID_NDATA,
+		    &ndata) == 0) {
+			/* dRAID minimum allocation width */
+			asize = MAX(asize, ndata * (1ULL << ashift));
+		} else if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_NPARITY,
+		    &nparity) == 0) {
+			/* raidz minimum allocation width */
+			if (nparity == 1)
+				asize = MAX(asize, 2 * (1ULL << ashift));
+			else
+				asize = MAX(asize, 4 * (1ULL << ashift));
+		} else {
+			/* mirror or (non-redundant) leaf vdev */
+			asize = MAX(asize, 1ULL << ashift);
+		}
+	}
+
+	/*
+	 * Calculate the target volblocksize such that more than half
+	 * of the asize is used. The following table is for 4k sectors.
+	 *
+	 * n   asize   blksz  used  |   n   asize   blksz  used
+	 * -------------------------+---------------------------------
+	 * 1   4,096   8,192  100%  |   9  36,864  32,768   88%
+	 * 2   8,192   8,192  100%  |  10  40,960  32,768   80%
+	 * 3  12,288   8,192   66%  |  11  45,056  32,768   72%
+	 * 4  16,384  16,384  100%  |  12  49,152  32,768   66%
+	 * 5  20,480  16,384   80%  |  13  53,248  32,768   61%
+	 * 6  24,576  16,384   66%  |  14  57,344  32,768   57%
+	 * 7  28,672  16,384   57%  |  15  61,440  32,768   53%
+	 * 8  32,768  32,768  100%  |  16  65,536  65,636  100%
+	 *
+	 * This is primarily a concern for dRAID which always allocates
+	 * a full stripe width.  For dRAID the default stripe width is
+	 * n=8 in which case the volblocksize is set to 32k. Ignoring
+	 * compression there are no unused sectors.  This same reasoning
+	 * applies to raidz[2,3] so target 4 sectors to minimize waste.
+	 */
+	uint64_t tgt_volblocksize = ZVOL_DEFAULT_BLOCKSIZE;
+	while (tgt_volblocksize * 2 <= asize)
+		tgt_volblocksize *= 2;
+
+	const char *prop = zfs_prop_to_name(ZFS_PROP_VOLBLOCKSIZE);
+	if (nvlist_lookup_uint64(props, prop, &volblocksize) == 0) {
+
+		/* Issue a warning when a non-optimal size is requested. */
+		if (volblocksize < ZVOL_DEFAULT_BLOCKSIZE) {
+			(void) fprintf(stderr, gettext("Warning: "
+			    "volblocksize (%llu) is less than the default "
+			    "minimum block size (%llu).\nTo reduce wasted "
+			    "space a volblocksize of %llu is recommended.\n"),
+			    (u_longlong_t)volblocksize,
+			    (u_longlong_t)ZVOL_DEFAULT_BLOCKSIZE,
+			    (u_longlong_t)tgt_volblocksize);
+		} else if (volblocksize < tgt_volblocksize) {
+			(void) fprintf(stderr, gettext("Warning: "
+			    "volblocksize (%llu) is much less than the "
+			    "minimum allocation\nunit (%llu), which wastes "
+			    "at least %llu%% of space. To reduce wasted "
+			    "space,\nuse a larger volblocksize (%llu is "
+			    "recommended), fewer dRAID data disks\n"
+			    "per group, or smaller sector size (ashift).\n"),
+			    (u_longlong_t)volblocksize, (u_longlong_t)asize,
+			    (u_longlong_t)((100 * (asize - volblocksize)) /
+			    asize), (u_longlong_t)tgt_volblocksize);
+		}
+	} else {
+		volblocksize = tgt_volblocksize;
+		fnvlist_add_uint64(props, prop, volblocksize);
+	}
+
+	return (volblocksize);
+}
+
+/*
  * zfs create [-Pnpv] [-o prop=value] ... fs
  * zfs create [-Pnpsv] [-b blocksize] [-o prop=value] ... -V vol size
  *
@@ -885,6 +1010,8 @@ usage:
  * check of arguments and properties, but does not check for permissions,
  * available space, etc.
  *
+ * The '-u' flag prevents the newly created file system from being mounted.
+ *
  * The '-v' flag is for verbose output.
  *
  * The '-P' flag is used for parseable output.  It implies '-v'.
@@ -901,17 +1028,19 @@ zfs_do_create(int argc, char **argv)
 	boolean_t bflag = B_FALSE;
 	boolean_t parents = B_FALSE;
 	boolean_t dryrun = B_FALSE;
+	boolean_t nomount = B_FALSE;
 	boolean_t verbose = B_FALSE;
 	boolean_t parseable = B_FALSE;
 	int ret = 1;
 	nvlist_t *props;
 	uint64_t intval;
+	char *strval;
 
 	if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0)
 		nomem();
 
 	/* check options */
-	while ((c = getopt(argc, argv, ":PV:b:nso:pv")) != -1) {
+	while ((c = getopt(argc, argv, ":PV:b:nso:puv")) != -1) {
 		switch (c) {
 		case 'V':
 			type = ZFS_TYPE_VOLUME;
@@ -958,6 +1087,9 @@ zfs_do_create(int argc, char **argv)
 		case 's':
 			noreserve = B_TRUE;
 			break;
+		case 'u':
+			nomount = B_TRUE;
+			break;
 		case 'v':
 			verbose = B_TRUE;
 			break;
@@ -977,6 +1109,11 @@ zfs_do_create(int argc, char **argv)
 		    "used when creating a volume\n"));
 		goto badusage;
 	}
+	if (nomount && type != ZFS_TYPE_FILESYSTEM) {
+		(void) fprintf(stderr, gettext("'-u' can only be "
+		    "used when creating a filesystem\n"));
+		goto badusage;
+	}
 
 	argc -= optind;
 	argv += optind;
@@ -992,7 +1129,7 @@ zfs_do_create(int argc, char **argv)
 		goto badusage;
 	}
 
-	if (dryrun || (type == ZFS_TYPE_VOLUME && !noreserve)) {
+	if (dryrun || type == ZFS_TYPE_VOLUME) {
 		char msg[ZFS_MAX_DATASET_NAME_LEN * 2];
 		char *p;
 
@@ -1014,10 +1151,39 @@ zfs_do_create(int argc, char **argv)
 		}
 	}
 
+	if (type == ZFS_TYPE_VOLUME) {
+		const char *prop = zfs_prop_to_name(ZFS_PROP_VOLBLOCKSIZE);
+		uint64_t volblocksize = default_volblocksize(zpool_handle,
+		    real_props);
+
+		if (volblocksize != ZVOL_DEFAULT_BLOCKSIZE &&
+		    nvlist_lookup_string(props, prop, &strval) != 0) {
+			if (asprintf(&strval, "%llu",
+			    (u_longlong_t)volblocksize) == -1)
+				nomem();
+			nvlist_add_string(props, prop, strval);
+			free(strval);
+		}
+
+		/*
+		 * If volsize is not a multiple of volblocksize, round it
+		 * up to the nearest multiple of the volblocksize.
+		 */
+		if (volsize % volblocksize) {
+			volsize = P2ROUNDUP_TYPED(volsize, volblocksize,
+			    uint64_t);
+
+			if (nvlist_add_uint64(props,
+			    zfs_prop_to_name(ZFS_PROP_VOLSIZE), volsize) != 0) {
+				nvlist_free(props);
+				nomem();
+			}
+		}
+	}
+
 	if (type == ZFS_TYPE_VOLUME && !noreserve) {
 		uint64_t spa_version;
 		zfs_prop_t resv_prop;
-		char *strval;
 
 		spa_version = zpool_get_prop_int(zpool_handle,
 		    ZPOOL_PROP_VERSION, NULL);
@@ -1106,6 +1272,11 @@ zfs_do_create(int argc, char **argv)
 	if (log_history) {
 		(void) zpool_log_history(g_zfs, history_str);
 		log_history = B_FALSE;
+	}
+
+	if (nomount) {
+		ret = 0;
+		goto error;
 	}
 
 	ret = zfs_mount_and_share(g_zfs, argv[0], ZFS_TYPE_DATASET);
@@ -1965,7 +2136,7 @@ zfs_do_get(int argc, char **argv)
 			flags &= ~ZFS_ITER_PROP_LISTSNAPS;
 			while (*optarg != '\0') {
 				static char *type_subopts[] = { "filesystem",
-				    "volume", "snapshot", "bookmark",
+				    "volume", "snapshot", "snap", "bookmark",
 				    "all", NULL };
 
 				switch (getsubopt(&optarg, type_subopts,
@@ -1977,12 +2148,13 @@ zfs_do_get(int argc, char **argv)
 					types |= ZFS_TYPE_VOLUME;
 					break;
 				case 2:
+				case 3:
 					types |= ZFS_TYPE_SNAPSHOT;
 					break;
-				case 3:
+				case 4:
 					types |= ZFS_TYPE_BOOKMARK;
 					break;
-				case 4:
+				case 5:
 					types = ZFS_TYPE_DATASET |
 					    ZFS_TYPE_BOOKMARK;
 					break;
@@ -2015,11 +2187,11 @@ zfs_do_get(int argc, char **argv)
 	fields = argv[0];
 
 	/*
-	 * Handle users who want to get all snapshots of the current
-	 * dataset (ex. 'zfs get -t snapshot refer <dataset>').
+	 * Handle users who want to get all snapshots or bookmarks
+	 * of a dataset (ex. 'zfs get -t snapshot refer <dataset>').
 	 */
-	if (types == ZFS_TYPE_SNAPSHOT && argc > 1 &&
-	    (flags & ZFS_ITER_RECURSE) == 0 && limit == 0) {
+	if ((types == ZFS_TYPE_SNAPSHOT || types == ZFS_TYPE_BOOKMARK) &&
+	    argc > 1 && (flags & ZFS_ITER_RECURSE) == 0 && limit == 0) {
 		flags |= (ZFS_ITER_DEPTH_LIMIT | ZFS_ITER_RECURSE);
 		limit = 1;
 	}
@@ -2429,11 +2601,13 @@ zfs_do_upgrade(int argc, char **argv)
 
 /*
  * zfs userspace [-Hinp] [-o field[,...]] [-s field [-s field]...]
- *               [-S field [-S field]...] [-t type[,...]] filesystem | snapshot
+ *               [-S field [-S field]...] [-t type[,...]]
+ *               filesystem | snapshot | path
  * zfs groupspace [-Hinp] [-o field[,...]] [-s field [-s field]...]
- *                [-S field [-S field]...] [-t type[,...]] filesystem | snapshot
+ *                [-S field [-S field]...] [-t type[,...]]
+ *                filesystem | snapshot | path
  * zfs projectspace [-Hp] [-o field[,...]] [-s field [-s field]...]
- *                [-S field [-S field]...] filesystem | snapshot
+ *                [-S field [-S field]...] filesystem | snapshot | path
  *
  *	-H      Scripted mode; elide headers and separate columns by tabs.
  *	-i	Translate SID to POSIX ID.
@@ -3139,7 +3313,7 @@ zfs_do_userspace(int argc, char **argv)
 		} while (delim != NULL);
 	}
 
-	if ((zhp = zfs_open(g_zfs, argv[0], ZFS_TYPE_FILESYSTEM |
+	if ((zhp = zfs_path_to_zhandle(g_zfs, argv[0], ZFS_TYPE_FILESYSTEM |
 	    ZFS_TYPE_SNAPSHOT)) == NULL)
 		return (1);
 	if (zhp->zfs_head_type != ZFS_TYPE_FILESYSTEM) {
@@ -3519,11 +3693,11 @@ zfs_do_list(int argc, char **argv)
 		types &= ~ZFS_TYPE_SNAPSHOT;
 
 	/*
-	 * Handle users who want to list all snapshots of the current
-	 * dataset (ex. 'zfs list -t snapshot <dataset>').
+	 * Handle users who want to list all snapshots or bookmarks
+	 * of the current dataset (ex. 'zfs list -t snapshot <dataset>').
 	 */
-	if (types == ZFS_TYPE_SNAPSHOT && argc > 0 &&
-	    (flags & ZFS_ITER_RECURSE) == 0 && limit == 0) {
+	if ((types == ZFS_TYPE_SNAPSHOT || types == ZFS_TYPE_BOOKMARK) &&
+	    argc > 0 && (flags & ZFS_ITER_RECURSE) == 0 && limit == 0) {
 		flags |= (ZFS_ITER_DEPTH_LIMIT | ZFS_ITER_RECURSE);
 		limit = 1;
 	}
@@ -3552,36 +3726,40 @@ zfs_do_list(int argc, char **argv)
 }
 
 /*
- * zfs rename [-f] <fs | snap | vol> <fs | snap | vol>
+ * zfs rename [-fu] <fs | snap | vol> <fs | snap | vol>
  * zfs rename [-f] -p <fs | vol> <fs | vol>
- * zfs rename -r <snap> <snap>
+ * zfs rename [-u] -r <snap> <snap>
  *
  * Renames the given dataset to another of the same type.
  *
  * The '-p' flag creates all the non-existing ancestors of the target first.
+ * The '-u' flag prevents file systems from being remounted during rename.
  */
 /* ARGSUSED */
 static int
 zfs_do_rename(int argc, char **argv)
 {
 	zfs_handle_t *zhp;
+	renameflags_t flags = { 0 };
 	int c;
 	int ret = 0;
-	boolean_t recurse = B_FALSE;
+	int types;
 	boolean_t parents = B_FALSE;
-	boolean_t force_unmount = B_FALSE;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "prf")) != -1) {
+	while ((c = getopt(argc, argv, "pruf")) != -1) {
 		switch (c) {
 		case 'p':
 			parents = B_TRUE;
 			break;
 		case 'r':
-			recurse = B_TRUE;
+			flags.recursive = B_TRUE;
+			break;
+		case 'u':
+			flags.nounmount = B_TRUE;
 			break;
 		case 'f':
-			force_unmount = B_TRUE;
+			flags.forceunmount = B_TRUE;
 			break;
 		case '?':
 		default:
@@ -3610,20 +3788,32 @@ zfs_do_rename(int argc, char **argv)
 		usage(B_FALSE);
 	}
 
-	if (recurse && parents) {
+	if (flags.recursive && parents) {
 		(void) fprintf(stderr, gettext("-p and -r options are mutually "
 		    "exclusive\n"));
 		usage(B_FALSE);
 	}
 
-	if (recurse && strchr(argv[0], '@') == 0) {
+	if (flags.nounmount && parents) {
+		(void) fprintf(stderr, gettext("-u and -p options are mutually "
+		    "exclusive\n"));
+		usage(B_FALSE);
+	}
+
+	if (flags.recursive && strchr(argv[0], '@') == 0) {
 		(void) fprintf(stderr, gettext("source dataset for recursive "
 		    "rename must be a snapshot\n"));
 		usage(B_FALSE);
 	}
 
-	if ((zhp = zfs_open(g_zfs, argv[0], parents ? ZFS_TYPE_FILESYSTEM |
-	    ZFS_TYPE_VOLUME : ZFS_TYPE_DATASET)) == NULL)
+	if (flags.nounmount)
+		types = ZFS_TYPE_FILESYSTEM;
+	else if (parents)
+		types = ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME;
+	else
+		types = ZFS_TYPE_DATASET;
+
+	if ((zhp = zfs_open(g_zfs, argv[0], types)) == NULL)
 		return (1);
 
 	/* If we were asked and the name looks good, try to create ancestors. */
@@ -3633,7 +3823,7 @@ zfs_do_rename(int argc, char **argv)
 		return (1);
 	}
 
-	ret = (zfs_rename(zhp, argv[1], recurse, force_unmount) != 0);
+	ret = (zfs_rename(zhp, argv[1], flags) != 0);
 
 	zfs_close(zhp);
 	return (ret);
@@ -3728,8 +3918,13 @@ zfs_do_redact(int argc, char **argv)
 		    "specified\n"));
 		break;
 	case EINVAL:
-		(void) fprintf(stderr, gettext("redaction snapshot must be "
-		    "descendent of snapshot being redacted\n"));
+		if (strchr(bookname, '#') != NULL)
+			(void) fprintf(stderr, gettext(
+			    "redaction bookmark name must not contain '#'\n"));
+		else
+			(void) fprintf(stderr, gettext(
+			    "redaction snapshot must be descendent of "
+			    "snapshot being redacted\n"));
 		break;
 	case EALREADY:
 		(void) fprintf(stderr, gettext("attempted to redact redacted "
@@ -3738,6 +3933,10 @@ zfs_do_redact(int argc, char **argv)
 	case ENOTSUP:
 		(void) fprintf(stderr, gettext("redaction bookmarks feature "
 		    "not enabled\n"));
+		break;
+	case EXDEV:
+		(void) fprintf(stderr, gettext("potentially invalid redaction "
+		    "snapshot; full dataset names required\n"));
 		break;
 	default:
 		(void) fprintf(stderr, gettext("internal error: %s\n"),
@@ -4190,11 +4389,12 @@ zfs_do_send(int argc, char **argv)
 		{"raw",		no_argument,		NULL, 'w'},
 		{"backup",	no_argument,		NULL, 'b'},
 		{"holds",	no_argument,		NULL, 'h'},
+		{"saved",	no_argument,		NULL, 'S'},
 		{0, 0, 0, 0}
 	};
 
 	/* check options */
-	while ((c = getopt_long(argc, argv, ":i:I:RDpvnPLeht:cwbd:",
+	while ((c = getopt_long(argc, argv, ":i:I:RDpvnPLeht:cwbd:S",
 	    long_options, NULL)) != -1) {
 		switch (c) {
 		case 'i':
@@ -4231,7 +4431,10 @@ zfs_do_send(int argc, char **argv)
 			flags.progress = B_TRUE;
 			break;
 		case 'D':
-			flags.dedup = B_TRUE;
+			(void) fprintf(stderr,
+			    gettext("WARNING: deduplicated send is no "
+			    "longer supported.  A regular,\n"
+			    "non-deduplicated stream will be generated.\n\n"));
 			break;
 		case 'n':
 			flags.dryrun = B_TRUE;
@@ -4253,6 +4456,9 @@ zfs_do_send(int argc, char **argv)
 			flags.compress = B_TRUE;
 			flags.embed_data = B_TRUE;
 			flags.largeblock = B_TRUE;
+			break;
+		case 'S':
+			flags.saved = B_TRUE;
 			break;
 		case ':':
 			/*
@@ -4303,8 +4509,8 @@ zfs_do_send(int argc, char **argv)
 
 	if (resume_token != NULL) {
 		if (fromname != NULL || flags.replicate || flags.props ||
-		    flags.backup || flags.dedup || flags.holds ||
-		    redactbook != NULL) {
+		    flags.backup || flags.holds ||
+		    flags.saved || redactbook != NULL) {
 			(void) fprintf(stderr,
 			    gettext("invalid flags combined with -t\n"));
 			usage(B_FALSE);
@@ -4325,6 +4531,23 @@ zfs_do_send(int argc, char **argv)
 		}
 	}
 
+	if (flags.saved) {
+		if (fromname != NULL || flags.replicate || flags.props ||
+		    flags.doall || flags.backup ||
+		    flags.holds || flags.largeblock || flags.embed_data ||
+		    flags.compress || flags.raw || redactbook != NULL) {
+			(void) fprintf(stderr, gettext("incompatible flags "
+			    "combined with saved send flag\n"));
+			usage(B_FALSE);
+		}
+		if (strchr(argv[0], '@') != NULL) {
+			(void) fprintf(stderr, gettext("saved send must "
+			    "specify the dataset with partially-received "
+			    "state\n"));
+			usage(B_FALSE);
+		}
+	}
+
 	if (flags.raw && redactbook != NULL) {
 		(void) fprintf(stderr,
 		    gettext("Error: raw sends may not be redacted.\n"));
@@ -4338,7 +4561,16 @@ zfs_do_send(int argc, char **argv)
 		return (1);
 	}
 
-	if (resume_token != NULL) {
+	if (flags.saved) {
+		zhp = zfs_open(g_zfs, argv[0], ZFS_TYPE_DATASET);
+		if (zhp == NULL)
+			return (1);
+
+		err = zfs_send_saved(zhp, &flags, STDOUT_FILENO,
+		    resume_token);
+		zfs_close(zhp);
+		return (err != 0);
+	} else if (resume_token != NULL) {
 		return (zfs_send_resume(g_zfs, &flags, STDOUT_FILENO,
 		    resume_token));
 	}
@@ -4348,18 +4580,6 @@ zfs_do_send(int argc, char **argv)
 	 */
 	if (!(flags.replicate || flags.doall)) {
 		char frombuf[ZFS_MAX_DATASET_NAME_LEN];
-
-		if (redactbook != NULL) {
-			if (strchr(argv[0], '@') == NULL) {
-				(void) fprintf(stderr, gettext("Error: Cannot "
-				    "do a redacted send to a filesystem.\n"));
-				return (1);
-			}
-		}
-
-		zhp = zfs_open(g_zfs, argv[0], ZFS_TYPE_DATASET);
-		if (zhp == NULL)
-			return (1);
 
 		if (fromname != NULL && (strchr(fromname, '#') == NULL &&
 		    strchr(fromname, '@') == NULL)) {
@@ -4389,6 +4609,10 @@ zfs_do_send(int argc, char **argv)
 			(void) strlcat(frombuf, tmpbuf, sizeof (frombuf));
 			fromname = frombuf;
 		}
+
+		zhp = zfs_open(g_zfs, argv[0], ZFS_TYPE_DATASET);
+		if (zhp == NULL)
+			return (1);
 		err = zfs_send_one(zhp, fromname, STDOUT_FILENO, &flags,
 		    redactbook);
 		zfs_close(zhp);
@@ -4487,7 +4711,7 @@ zfs_do_receive(int argc, char **argv)
 		nomem();
 
 	/* check options */
-	while ((c = getopt(argc, argv, ":o:x:dehnuvFsA")) != -1) {
+	while ((c = getopt(argc, argv, ":o:x:dehMnuvFsA")) != -1) {
 		switch (c) {
 		case 'o':
 			if (!parseprop(props, optarg)) {
@@ -4521,6 +4745,9 @@ zfs_do_receive(int argc, char **argv)
 			break;
 		case 'h':
 			flags.skipholds = B_TRUE;
+			break;
+		case 'M':
+			flags.forceunmount = B_TRUE;
 			break;
 		case 'n':
 			flags.dryrun = B_TRUE;
@@ -5085,7 +5312,6 @@ parse_fs_perm(fs_perm_t *fsperm, nvlist_t *nvl)
 		zfs_deleg_who_type_t perm_type = name[0];
 		char perm_locality = name[1];
 		const char *perm_name = name + 3;
-		boolean_t is_set = B_TRUE;
 		who_perm_t *who_perm = NULL;
 
 		assert('$' == name[2]);
@@ -5115,57 +5341,63 @@ parse_fs_perm(fs_perm_t *fsperm, nvlist_t *nvl)
 			assert(!"unhandled zfs_deleg_who_type_t");
 		}
 
-		if (is_set) {
-			who_perm_node_t *found_node = NULL;
-			who_perm_node_t *node = safe_malloc(
-			    sizeof (who_perm_node_t));
-			who_perm = &node->who_perm;
-			uu_avl_index_t idx = 0;
+		who_perm_node_t *found_node = NULL;
+		who_perm_node_t *node = safe_malloc(
+		    sizeof (who_perm_node_t));
+		who_perm = &node->who_perm;
+		uu_avl_index_t idx = 0;
 
-			uu_avl_node_init(node, &node->who_avl_node, avl_pool);
-			who_perm_init(who_perm, fsperm, perm_type, perm_name);
+		uu_avl_node_init(node, &node->who_avl_node, avl_pool);
+		who_perm_init(who_perm, fsperm, perm_type, perm_name);
 
-			if ((found_node = uu_avl_find(avl, node, NULL, &idx))
-			    == NULL) {
-				if (avl == fsperm->fsp_uge_avl) {
-					uid_t rid = 0;
-					struct passwd *p = NULL;
-					struct group *g = NULL;
-					const char *nice_name = NULL;
+		if ((found_node = uu_avl_find(avl, node, NULL, &idx))
+		    == NULL) {
+			if (avl == fsperm->fsp_uge_avl) {
+				uid_t rid = 0;
+				struct passwd *p = NULL;
+				struct group *g = NULL;
+				const char *nice_name = NULL;
 
-					switch (perm_type) {
-					case ZFS_DELEG_USER_SETS:
-					case ZFS_DELEG_USER:
-						rid = atoi(perm_name);
-						p = getpwuid(rid);
-						if (p)
-							nice_name = p->pw_name;
-						break;
-					case ZFS_DELEG_GROUP_SETS:
-					case ZFS_DELEG_GROUP:
-						rid = atoi(perm_name);
-						g = getgrgid(rid);
-						if (g)
-							nice_name = g->gr_name;
-						break;
+				switch (perm_type) {
+				case ZFS_DELEG_USER_SETS:
+				case ZFS_DELEG_USER:
+					rid = atoi(perm_name);
+					p = getpwuid(rid);
+					if (p)
+						nice_name = p->pw_name;
+					break;
+				case ZFS_DELEG_GROUP_SETS:
+				case ZFS_DELEG_GROUP:
+					rid = atoi(perm_name);
+					g = getgrgid(rid);
+					if (g)
+						nice_name = g->gr_name;
+					break;
 
-					default:
-						break;
-					}
-
-					if (nice_name != NULL)
-						(void) strlcpy(
-						    node->who_perm.who_ug_name,
-						    nice_name, 256);
+				default:
+					break;
 				}
 
-				uu_avl_insert(avl, node, idx);
-			} else {
-				node = found_node;
-				who_perm = &node->who_perm;
+				if (nice_name != NULL) {
+					(void) strlcpy(
+					    node->who_perm.who_ug_name,
+					    nice_name, 256);
+				} else {
+					/* User or group unknown */
+					(void) snprintf(
+					    node->who_perm.who_ug_name,
+					    sizeof (node->who_perm.who_ug_name),
+					    "(unknown: %d)", rid);
+				}
 			}
+
+			uu_avl_insert(avl, node, idx);
+		} else {
+			node = found_node;
+			who_perm = &node->who_perm;
 		}
-		VERIFY3P(who_perm, !=, NULL);
+
+		assert(who_perm != NULL);
 		(void) parse_who_perm(who_perm, nvl2, perm_locality);
 	}
 
@@ -5688,9 +5920,9 @@ construct_fsacl_list(boolean_t un, struct allow_opts *opts, nvlist_t **nvlp)
 
 				if (p != NULL)
 					rid = p->pw_uid;
-				else {
+				else if (*endch != '\0') {
 					(void) snprintf(errbuf, 256, gettext(
-					    "invalid user %s"), curr);
+					    "invalid user %s\n"), curr);
 					allow_usage(un, B_TRUE, errbuf);
 				}
 			} else if (opts->group) {
@@ -5702,9 +5934,9 @@ construct_fsacl_list(boolean_t un, struct allow_opts *opts, nvlist_t **nvlp)
 
 				if (g != NULL)
 					rid = g->gr_gid;
-				else {
+				else if (*endch != '\0') {
 					(void) snprintf(errbuf, 256, gettext(
-					    "invalid group %s"),  curr);
+					    "invalid group %s\n"),  curr);
 					allow_usage(un, B_TRUE, errbuf);
 				}
 			} else {
@@ -5730,7 +5962,7 @@ construct_fsacl_list(boolean_t un, struct allow_opts *opts, nvlist_t **nvlp)
 					rid = g->gr_gid;
 				} else {
 					(void) snprintf(errbuf, 256, gettext(
-					    "invalid user/group %s"), curr);
+					    "invalid user/group %s\n"), curr);
 					allow_usage(un, B_TRUE, errbuf);
 				}
 			}
@@ -6145,7 +6377,7 @@ typedef struct holds_cbdata {
 	size_t		cb_max_taglen;
 } holds_cbdata_t;
 
-#define	STRFTIME_FMT_STR "%a %b %e %k:%M %Y"
+#define	STRFTIME_FMT_STR "%a %b %e %H:%M %Y"
 #define	DATETIME_BUF_LEN (32)
 /*
  *
@@ -6484,9 +6716,9 @@ share_mount_one(zfs_handle_t *zhp, int op, int flags, char *protocol,
 
 		(void) fprintf(stderr, gettext("cannot share '%s': "
 		    "legacy share\n"), zfs_get_name(zhp));
-		(void) fprintf(stderr, gettext("use share(1M) to "
-		    "share this filesystem, or set "
-		    "sharenfs property on\n"));
+		(void) fprintf(stderr, gettext("use exports(5) or "
+		    "smb.conf(5) to share this filesystem, or set "
+		    "the sharenfs or sharesmb property\n"));
 		return (1);
 	}
 
@@ -6501,7 +6733,7 @@ share_mount_one(zfs_handle_t *zhp, int op, int flags, char *protocol,
 
 		(void) fprintf(stderr, gettext("cannot %s '%s': "
 		    "legacy mountpoint\n"), cmdname, zfs_get_name(zhp));
-		(void) fprintf(stderr, gettext("use %s(1M) to "
+		(void) fprintf(stderr, gettext("use %s(8) to "
 		    "%s this filesystem\n"), cmdname, cmdname);
 		return (1);
 	}
@@ -6534,7 +6766,18 @@ share_mount_one(zfs_handle_t *zhp, int op, int flags, char *protocol,
 		    zfs_get_name(zhp));
 		return (1);
 	} else if (canmount == ZFS_CANMOUNT_NOAUTO && !explicit) {
-		return (0);
+		/*
+		 * When performing a 'zfs mount -a', we skip any mounts for
+		 * datasets that have 'noauto' set. Sharing a dataset with
+		 * 'noauto' set is only allowed if it's mounted.
+		 */
+		if (op == OP_MOUNT)
+			return (0);
+		if (op == OP_SHARE && !zfs_is_mounted(zhp, NULL)) {
+			/* also purge it from existing exports */
+			zfs_unshareall_bypath(zhp, mountpoint);
+			return (0);
+		}
 	}
 
 	/*
@@ -6649,25 +6892,8 @@ share_mount_one(zfs_handle_t *zhp, int op, int flags, char *protocol,
 			return (1);
 		}
 
-		if (zfs_mount(zhp, options, flags) != 0) {
-			/*
-			 * Check if a mount sneaked in after we checked
-			 */
-			if (!explicit &&
-			    libzfs_errno(g_zfs) == EZFS_MOUNTFAILED) {
-				usleep(10 * MILLISEC);
-				libzfs_mnttab_cache(g_zfs, B_FALSE);
-
-				if (zfs_is_mounted(zhp, NULL)) {
-					(void) fprintf(stderr, gettext(
-					    "Ignoring previous 'already "
-					    "mounted' error for '%s'\n"),
-					    zfs_get_name(zhp));
-					return (0);
-				}
-			}
+		if (zfs_mount(zhp, options, flags) != 0)
 			return (1);
-		}
 		break;
 	}
 
@@ -6683,9 +6909,6 @@ report_mount_progress(int current, int total)
 	static time_t last_progress_time = 0;
 	time_t now = time(NULL);
 	char info[32];
-
-	/* report 1..n instead of 0..n-1 */
-	++current;
 
 	/* display header if we're here for the first time */
 	if (current == 1) {
@@ -6852,6 +7075,8 @@ share_mount(int op, int argc, char **argv)
 		zfs_foreach_mountpoint(g_zfs, cb.cb_handles, cb.cb_used,
 		    share_mount_one_cb, &share_mount_state,
 		    op == OP_MOUNT && !(flags & MS_CRYPT));
+		zfs_commit_all_shares();
+
 		ret = share_mount_state.sm_status;
 
 		for (int i = 0; i < cb.cb_used; i++)
@@ -6904,6 +7129,7 @@ share_mount(int op, int argc, char **argv)
 		} else {
 			ret = share_mount_one(zhp, op, flags, NULL, B_TRUE,
 			    options);
+			zfs_commit_all_shares();
 			zfs_close(zhp);
 		}
 	}
@@ -6970,19 +7196,6 @@ unshare_unmount_path(int op, char *path, int flags, boolean_t is_manual)
 	ino_t path_inode;
 
 	/*
-	 * Search for the path in /proc/self/mounts. Rather than looking for the
-	 * specific path, which can be fooled by non-standard paths (i.e. ".."
-	 * or "//"), we stat() the path and search for the corresponding
-	 * (major,minor) device pair.
-	 */
-	if (stat64(path, &statbuf) != 0) {
-		(void) fprintf(stderr, gettext("cannot %s '%s': %s\n"),
-		    cmdname, path, strerror(errno));
-		return (1);
-	}
-	path_inode = statbuf.st_ino;
-
-	/*
 	 * Search for the given (major,minor) pair in the mount table.
 	 */
 
@@ -6990,12 +7203,7 @@ unshare_unmount_path(int op, char *path, int flags, boolean_t is_manual)
 	if (freopen(MNTTAB, "r", mnttab_file) == NULL)
 		return (ENOENT);
 
-	while ((ret = getextmntent(mnttab_file, &entry, 0)) == 0) {
-		if (entry.mnt_major == major(statbuf.st_dev) &&
-		    entry.mnt_minor == minor(statbuf.st_dev))
-			break;
-	}
-	if (ret != 0) {
+	if (getextmntent(path, &entry, &statbuf) != 0) {
 		if (op == OP_SHARE) {
 			(void) fprintf(stderr, gettext("cannot %s '%s': not "
 			    "currently mounted\n"), cmdname, path);
@@ -7008,6 +7216,7 @@ unshare_unmount_path(int op, char *path, int flags, boolean_t is_manual)
 			    strerror(errno));
 		return (ret != 0);
 	}
+	path_inode = statbuf.st_ino;
 
 	if (strcmp(entry.mnt_fstype, MNTTYPE_ZFS) != 0) {
 		(void) fprintf(stderr, gettext("cannot %s '%s': not a ZFS "
@@ -7050,6 +7259,7 @@ unshare_unmount_path(int op, char *path, int flags, boolean_t is_manual)
 			    "not currently shared\n"), path);
 		} else {
 			ret = zfs_unshareall_bypath(zhp, path);
+			zfs_commit_all_shares();
 		}
 	} else {
 		char mtpt_prop[ZFS_MAXPROPLEN];
@@ -7248,8 +7458,9 @@ unshare_unmount(int op, int argc, char **argv)
 			nomem();
 
 		while ((node = uu_avl_walk_next(walk)) != NULL) {
-			uu_avl_remove(tree, node);
+			const char *mntarg = NULL;
 
+			uu_avl_remove(tree, node);
 			switch (op) {
 			case OP_SHARE:
 				if (zfs_unshareall_bytype(node->un_zhp,
@@ -7259,7 +7470,7 @@ unshare_unmount(int op, int argc, char **argv)
 
 			case OP_MOUNT:
 				if (zfs_unmount(node->un_zhp,
-				    node->un_zhp->zfs_name, flags) != 0)
+				    mntarg, flags) != 0)
 					ret = 1;
 				break;
 			}
@@ -7268,6 +7479,9 @@ unshare_unmount(int op, int argc, char **argv)
 			free(node->un_mountp);
 			free(node);
 		}
+
+		if (op == OP_SHARE)
+			zfs_commit_shares(protocol);
 
 		uu_avl_walk_end(walk);
 		uu_avl_destroy(tree);
@@ -7319,8 +7533,8 @@ unshare_unmount(int op, int argc, char **argv)
 				    "unshare '%s': legacy share\n"),
 				    zfs_get_name(zhp));
 				(void) fprintf(stderr, gettext("use "
-				    "unshare(1M) to unshare this "
-				    "filesystem\n"));
+				    "exports(5) or smb.conf(5) to unshare "
+				    "this filesystem\n"));
 				ret = 1;
 			} else if (!zfs_is_shared(zhp)) {
 				(void) fprintf(stderr, gettext("cannot "
@@ -7338,7 +7552,7 @@ unshare_unmount(int op, int argc, char **argv)
 				    "unmount '%s': legacy "
 				    "mountpoint\n"), zfs_get_name(zhp));
 				(void) fprintf(stderr, gettext("use "
-				    "umount(1M) to unmount this "
+				    "umount(8) to unmount this "
 				    "filesystem\n"));
 				ret = 1;
 			} else if (!zfs_is_mounted(zhp, NULL)) {
@@ -7487,16 +7701,17 @@ out:
 }
 
 /*
- * zfs bookmark <fs@snap> <fs#bmark>
+ * zfs bookmark <fs@source>|<fs#source> <fs#bookmark>
  *
- * Creates a bookmark with the given name from the given snapshot.
+ * Creates a bookmark with the given name from the source snapshot
+ * or creates a copy of an existing source bookmark.
  */
 static int
 zfs_do_bookmark(int argc, char **argv)
 {
-	char snapname[ZFS_MAX_DATASET_NAME_LEN];
-	char bookname[ZFS_MAX_DATASET_NAME_LEN];
-	zfs_handle_t *zhp;
+	char *source, *bookname;
+	char expbuf[ZFS_MAX_DATASET_NAME_LEN];
+	int source_type;
 	nvlist_t *nvl;
 	int ret = 0;
 	int c;
@@ -7516,7 +7731,7 @@ zfs_do_bookmark(int argc, char **argv)
 
 	/* check number of arguments */
 	if (argc < 1) {
-		(void) fprintf(stderr, gettext("missing snapshot argument\n"));
+		(void) fprintf(stderr, gettext("missing source argument\n"));
 		goto usage;
 	}
 	if (argc < 2) {
@@ -7524,50 +7739,72 @@ zfs_do_bookmark(int argc, char **argv)
 		goto usage;
 	}
 
-	if (strchr(argv[0], '@') == NULL) {
+	source = argv[0];
+	bookname = argv[1];
+
+	if (strchr(source, '@') == NULL && strchr(source, '#') == NULL) {
 		(void) fprintf(stderr,
-		    gettext("invalid snapshot name '%s': "
-		    "must contain a '@'\n"), argv[0]);
+		    gettext("invalid source name '%s': "
+		    "must contain a '@' or '#'\n"), source);
 		goto usage;
 	}
-	if (strchr(argv[1], '#') == NULL) {
+	if (strchr(bookname, '#') == NULL) {
 		(void) fprintf(stderr,
 		    gettext("invalid bookmark name '%s': "
-		    "must contain a '#'\n"), argv[1]);
+		    "must contain a '#'\n"), bookname);
 		goto usage;
 	}
 
-	if (argv[0][0] == '@') {
-		/*
-		 * Snapshot name begins with @.
-		 * Default to same fs as bookmark.
-		 */
-		(void) strlcpy(snapname, argv[1], sizeof (snapname));
-		*strchr(snapname, '#') = '\0';
-		(void) strlcat(snapname, argv[0], sizeof (snapname));
-	} else {
-		(void) strlcpy(snapname, argv[0], sizeof (snapname));
-	}
-	if (argv[1][0] == '#') {
-		/*
-		 * Bookmark name begins with #.
-		 * Default to same fs as snapshot.
-		 */
-		(void) strlcpy(bookname, argv[0], sizeof (bookname));
-		*strchr(bookname, '@') = '\0';
-		(void) strlcat(bookname, argv[1], sizeof (bookname));
-	} else {
-		(void) strlcpy(bookname, argv[1], sizeof (bookname));
+	/*
+	 * expand source or bookname to full path:
+	 * one of them may be specified as short name
+	 */
+	{
+		char **expand;
+		char *source_short, *bookname_short;
+		source_short = strpbrk(source, "@#");
+		bookname_short = strpbrk(bookname, "#");
+		if (source_short == source &&
+		    bookname_short == bookname) {
+			(void) fprintf(stderr, gettext(
+			    "either source or bookmark must be specified as "
+			    "full dataset paths"));
+			goto usage;
+		} else if (source_short != source &&
+		    bookname_short != bookname) {
+			expand = NULL;
+		} else if (source_short != source) {
+			strlcpy(expbuf, source, sizeof (expbuf));
+			expand = &bookname;
+		} else if (bookname_short != bookname) {
+			strlcpy(expbuf, bookname, sizeof (expbuf));
+			expand = &source;
+		} else {
+			abort();
+		}
+		if (expand != NULL) {
+			*strpbrk(expbuf, "@#") = '\0'; /* dataset name in buf */
+			(void) strlcat(expbuf, *expand, sizeof (expbuf));
+			*expand = expbuf;
+		}
 	}
 
-	zhp = zfs_open(g_zfs, snapname, ZFS_TYPE_SNAPSHOT);
+	/* determine source type */
+	switch (*strpbrk(source, "@#")) {
+		case '@': source_type = ZFS_TYPE_SNAPSHOT; break;
+		case '#': source_type = ZFS_TYPE_BOOKMARK; break;
+		default: abort();
+	}
+
+	/* test the source exists */
+	zfs_handle_t *zhp;
+	zhp = zfs_open(g_zfs, source, source_type);
 	if (zhp == NULL)
 		goto usage;
 	zfs_close(zhp);
 
-
 	nvl = fnvlist_alloc();
-	fnvlist_add_string(nvl, bookname, snapname);
+	fnvlist_add_string(nvl, bookname, source);
 	ret = lzc_bookmark(nvl, NULL);
 	fnvlist_free(nvl);
 
@@ -7582,6 +7819,10 @@ zfs_do_bookmark(int argc, char **argv)
 		switch (ret) {
 		case EXDEV:
 			err_msg = "bookmark is in a different pool";
+			break;
+		case ZFS_ERR_BOOKMARK_SOURCE_NOT_ANCESTOR:
+			err_msg = "source is not an ancestor of the "
+			    "new bookmark's dataset";
 			break;
 		case EEXIST:
 			err_msg = "bookmark exists";
@@ -8061,7 +8302,7 @@ zfs_do_change_key(int argc, char **argv)
  * 4) zfs project [-p id] [-r] [-s] <file|directory ...>
  *    Set project ID and/or inherit flag on the file(s) or directories.
  *    -p: Set the project ID as the given id.
- *    -r: Set on subdirectorie recursively. If not specify "-p" option,
+ *    -r: Set on subdirectories recursively. If not specify "-p" option,
  *	  it will use top-level directory's project ID as the given id,
  *	  then set both project ID and inherit flag on all descendants
  *	  of the top-level directory.
@@ -8241,6 +8482,90 @@ zfs_do_project(int argc, char **argv)
 	return (ret);
 }
 
+static int
+zfs_do_wait(int argc, char **argv)
+{
+	boolean_t enabled[ZFS_WAIT_NUM_ACTIVITIES];
+	int error, i;
+	int c;
+
+	/* By default, wait for all types of activity. */
+	for (i = 0; i < ZFS_WAIT_NUM_ACTIVITIES; i++)
+		enabled[i] = B_TRUE;
+
+	while ((c = getopt(argc, argv, "t:")) != -1) {
+		switch (c) {
+		case 't':
+		{
+			static char *col_subopts[] = { "deleteq", NULL };
+			char *value;
+
+			/* Reset activities array */
+			bzero(&enabled, sizeof (enabled));
+			while (*optarg != '\0') {
+				int activity = getsubopt(&optarg, col_subopts,
+				    &value);
+
+				if (activity < 0) {
+					(void) fprintf(stderr,
+					    gettext("invalid activity '%s'\n"),
+					    value);
+					usage(B_FALSE);
+				}
+
+				enabled[activity] = B_TRUE;
+			}
+			break;
+		}
+		case '?':
+			(void) fprintf(stderr, gettext("invalid option '%c'\n"),
+			    optopt);
+			usage(B_FALSE);
+		}
+	}
+
+	argv += optind;
+	argc -= optind;
+	if (argc < 1) {
+		(void) fprintf(stderr, gettext("missing 'filesystem' "
+		    "argument\n"));
+		usage(B_FALSE);
+	}
+	if (argc > 1) {
+		(void) fprintf(stderr, gettext("too many arguments\n"));
+		usage(B_FALSE);
+	}
+
+	zfs_handle_t *zhp = zfs_open(g_zfs, argv[0], ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (1);
+
+	for (;;) {
+		boolean_t missing = B_FALSE;
+		boolean_t any_waited = B_FALSE;
+
+		for (int i = 0; i < ZFS_WAIT_NUM_ACTIVITIES; i++) {
+			boolean_t waited;
+
+			if (!enabled[i])
+				continue;
+
+			error = zfs_wait_status(zhp, i, &missing, &waited);
+			if (error != 0 || missing)
+				break;
+
+			any_waited = (any_waited || waited);
+		}
+
+		if (error != 0 || missing || !any_waited)
+			break;
+	}
+
+	zfs_close(zhp);
+
+	return (error);
+}
+
 /*
  * Display version message
  */
@@ -8262,6 +8587,7 @@ main(int argc, char **argv)
 	char **newargv;
 
 	(void) setlocale(LC_ALL, "");
+	(void) setlocale(LC_NUMERIC, "C");
 	(void) textdomain(TEXT_DOMAIN);
 
 	opterr = 0;
@@ -8308,7 +8634,7 @@ main(int argc, char **argv)
 		return (zfs_do_version(argc, argv));
 
 	if ((g_zfs = libzfs_init()) == NULL) {
-		(void) fprintf(stderr, "%s", libzfs_error_init(errno));
+		(void) fprintf(stderr, "%s\n", libzfs_error_init(errno));
 		return (1);
 	}
 
@@ -8365,3 +8691,67 @@ main(int argc, char **argv)
 
 	return (ret);
 }
+
+#ifdef __FreeBSD__
+#include <sys/jail.h>
+#include <jail.h>
+/*
+ * Attach/detach the given dataset to/from the given jail
+ */
+/* ARGSUSED */
+static int
+zfs_do_jail_impl(int argc, char **argv, boolean_t attach)
+{
+	zfs_handle_t *zhp;
+	int jailid, ret;
+
+	/* check number of arguments */
+	if (argc < 3) {
+		(void) fprintf(stderr, gettext("missing argument(s)\n"));
+		usage(B_FALSE);
+	}
+	if (argc > 3) {
+		(void) fprintf(stderr, gettext("too many arguments\n"));
+		usage(B_FALSE);
+	}
+
+	jailid = jail_getid(argv[1]);
+	if (jailid < 0) {
+		(void) fprintf(stderr, gettext("invalid jail id or name\n"));
+		usage(B_FALSE);
+	}
+
+	zhp = zfs_open(g_zfs, argv[2], ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (1);
+
+	ret = (zfs_jail(zhp, jailid, attach) != 0);
+
+	zfs_close(zhp);
+	return (ret);
+}
+
+/*
+ * zfs jail jailid filesystem
+ *
+ * Attach the given dataset to the given jail
+ */
+/* ARGSUSED */
+static int
+zfs_do_jail(int argc, char **argv)
+{
+	return (zfs_do_jail_impl(argc, argv, B_TRUE));
+}
+
+/*
+ * zfs unjail jailid filesystem
+ *
+ * Detach the given dataset from the given jail
+ */
+/* ARGSUSED */
+static int
+zfs_do_unjail(int argc, char **argv)
+{
+	return (zfs_do_jail_impl(argc, argv, B_FALSE));
+}
+#endif

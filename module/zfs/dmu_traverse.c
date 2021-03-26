@@ -74,7 +74,8 @@ static void prefetch_dnode_metadata(traverse_data_t *td, const dnode_phys_t *,
     uint64_t objset, uint64_t object);
 
 static int
-traverse_zil_block(zilog_t *zilog, blkptr_t *bp, void *arg, uint64_t claim_txg)
+traverse_zil_block(zilog_t *zilog, const blkptr_t *bp, void *arg,
+    uint64_t claim_txg)
 {
 	traverse_data_t *td = arg;
 	zbookmark_phys_t zb;
@@ -94,7 +95,8 @@ traverse_zil_block(zilog_t *zilog, blkptr_t *bp, void *arg, uint64_t claim_txg)
 }
 
 static int
-traverse_zil_record(zilog_t *zilog, lr_t *lrc, void *arg, uint64_t claim_txg)
+traverse_zil_record(zilog_t *zilog, const lr_t *lrc, void *arg,
+    uint64_t claim_txg)
 {
 	traverse_data_t *td = arg;
 
@@ -809,22 +811,24 @@ traverse_pool(spa_t *spa, uint64_t txg_start, int flags,
 	return (err);
 }
 
-#if defined(_KERNEL)
 EXPORT_SYMBOL(traverse_dataset);
 EXPORT_SYMBOL(traverse_pool);
 
-module_param(zfs_pd_bytes_max, int, 0644);
-MODULE_PARM_DESC(zfs_pd_bytes_max, "Max number of bytes to prefetch");
+/* BEGIN CSTYLED */
+ZFS_MODULE_PARAM(zfs, zfs_, pd_bytes_max, INT, ZMOD_RW,
+	"Max number of bytes to prefetch");
 
+
+#if defined(_KERNEL)
 module_param(zfs_traverse_indirect_prefetch_limit, int, 0644);
 MODULE_PARM_DESC(zfs_traverse_indirect_prefetch_limit,
     "Traverse prefetch number of blocks pointed by indirect block");
 
 module_param_named(ignore_hole_birth, send_holes_without_birth_time, int, 0644);
-MODULE_PARM_DESC(ignore_hole_birth, "Alias for send_holes_without_birth_time");
-
-module_param_named(send_holes_without_birth_time,
-	send_holes_without_birth_time, int, 0644);
-MODULE_PARM_DESC(send_holes_without_birth_time,
-	"Ignore hole_birth txg for zfs send");
+MODULE_PARM_DESC(ignore_hole_birth,
+	"Alias for send_holes_without_birth_time");
 #endif
+
+ZFS_MODULE_PARAM(zfs, , send_holes_without_birth_time, INT, ZMOD_RW,
+	"Ignore hole_birth txg for zfs send");
+/* END CSTYLED */

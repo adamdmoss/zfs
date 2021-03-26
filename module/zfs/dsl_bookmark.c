@@ -16,6 +16,7 @@
 /*
  * Copyright (c) 2013, 2018 by Delphix. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.
+ * Copyright 2019, 2020 by Christian Schwarz. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -55,6 +56,9 @@ dsl_bookmark_hold_ds(dsl_pool_t *dp, const char *fullname,
 }
 
 /*
+ * When reading BOOKMARK_V1 bookmarks, the BOOKMARK_V2 fields are guaranteed
+ * to be zeroed.
+ *
  * Returns ESRCH if bookmark is not found.
  * Note, we need to use the ZAP rather than the AVL to look up bookmarks
  * by name, because only the ZAP honors the casesensitivity setting.
@@ -84,11 +88,11 @@ dsl_bookmark_lookup_impl(dsl_dataset_t *ds, const char *shortname,
 	    sizeof (*bmark_phys) / sizeof (uint64_t), bmark_phys, mt, NULL, 0,
 	    NULL);
 
-	return (err == ENOENT ? ESRCH : err);
+	return (err == ENOENT ? SET_ERROR(ESRCH) : err);
 }
 
 /*
- * If later_ds is non-NULL, this will return EXDEV if the the specified bookmark
+ * If later_ds is non-NULL, this will return EXDEV if the specified bookmark
  * does not represents an earlier point in later_ds's timeline.  However,
  * bmp will still be filled in if we return EXDEV.
  *
@@ -116,80 +120,208 @@ dsl_bookmark_lookup(dsl_pool_t *dp, const char *fullname,
 	return (error);
 }
 
-typedef struct dsl_bookmark_create_redacted_arg {
-	const char	*dbcra_bmark;
-	const char	*dbcra_snap;
-	redaction_list_t **dbcra_rl;
-	uint64_t	dbcra_numsnaps;
-	uint64_t	*dbcra_snaps;
-	void		*dbcra_tag;
-} dsl_bookmark_create_redacted_arg_t;
-
-typedef struct dsl_bookmark_create_arg {
-	nvlist_t *dbca_bmarks;
-	nvlist_t *dbca_errors;
-} dsl_bookmark_create_arg_t;
-
+/*
+ * Validates that
+ * - bmark is a full dataset path of a bookmark (bookmark_namecheck)
+ * - source is a full path of a snapshot or bookmark
+ *   ({bookmark,snapshot}_namecheck)
+ *
+ * Returns 0 if valid, -1 otherwise.
+ */
 static int
-dsl_bookmark_create_check_impl(dsl_dataset_t *snapds, const char *bookmark_name,
-    dmu_tx_t *tx)
+dsl_bookmark_create_nvl_validate_pair(const char *bmark, const char *source)
 {
-	dsl_pool_t *dp = dmu_tx_pool(tx);
-	dsl_dataset_t *bmark_fs;
-	char *shortname;
+	if (bookmark_namecheck(bmark, NULL, NULL) != 0)
+		return (-1);
+
+	int is_bmark, is_snap;
+	is_bmark = bookmark_namecheck(source, NULL, NULL) == 0;
+	is_snap = snapshot_namecheck(source, NULL, NULL) == 0;
+	if (!is_bmark && !is_snap)
+		return (-1);
+
+	return (0);
+}
+
+/*
+ * Check that the given nvlist corresponds to the following schema:
+ *  { newbookmark -> source, ... }
+ * where
+ * - each pair passes dsl_bookmark_create_nvl_validate_pair
+ * - all newbookmarks are in the same pool
+ * - all newbookmarks have unique names
+ *
+ * Note that this function is only validates above schema. Callers must ensure
+ * that the bookmarks can be created, e.g. that sources exist.
+ *
+ * Returns 0 if the nvlist adheres to above schema.
+ * Returns -1 if it doesn't.
+ */
+int
+dsl_bookmark_create_nvl_validate(nvlist_t *bmarks)
+{
+	char *first;
+	size_t first_len;
+
+	first = NULL;
+	for (nvpair_t *pair = nvlist_next_nvpair(bmarks, NULL);
+	    pair != NULL; pair = nvlist_next_nvpair(bmarks, pair)) {
+
+		char *bmark = nvpair_name(pair);
+		char *source;
+
+		/* list structure: values must be snapshots XOR bookmarks */
+		if (nvpair_value_string(pair, &source) != 0)
+			return (-1);
+		if (dsl_bookmark_create_nvl_validate_pair(bmark, source) != 0)
+			return (-1);
+
+		/* same pool check */
+		if (first == NULL) {
+			char *cp = strpbrk(bmark, "/#");
+			if (cp == NULL)
+				return (-1);
+			first = bmark;
+			first_len = cp - bmark;
+		}
+		if (strncmp(first, bmark, first_len) != 0)
+			return (-1);
+		switch (*(bmark + first_len)) {
+			case '/': /* fallthrough */
+			case '#':
+				break;
+			default:
+				return (-1);
+		}
+
+		/* unique newbookmark names; todo: O(n^2) */
+		for (nvpair_t *pair2 = nvlist_next_nvpair(bmarks, pair);
+		    pair2 != NULL; pair2 = nvlist_next_nvpair(bmarks, pair2)) {
+			if (strcmp(nvpair_name(pair), nvpair_name(pair2)) == 0)
+				return (-1);
+		}
+
+	}
+	return (0);
+}
+
+/*
+ * expects that newbm and source have been validated using
+ * dsl_bookmark_create_nvl_validate_pair
+ */
+static int
+dsl_bookmark_create_check_impl(dsl_pool_t *dp,
+    const char *newbm, const char *source)
+{
+	ASSERT0(dsl_bookmark_create_nvl_validate_pair(newbm, source));
+	/* defer source namecheck until we know it's a snapshot or bookmark */
+
 	int error;
-	zfs_bookmark_phys_t bmark_phys = { 0 };
+	dsl_dataset_t *newbm_ds;
+	char *newbm_short;
+	zfs_bookmark_phys_t bmark_phys;
 
-	if (!snapds->ds_is_snapshot)
-		return (SET_ERROR(EINVAL));
-
-	error = dsl_bookmark_hold_ds(dp, bookmark_name,
-	    &bmark_fs, FTAG, &shortname);
+	error = dsl_bookmark_hold_ds(dp, newbm, &newbm_ds, FTAG, &newbm_short);
 	if (error != 0)
 		return (error);
 
-	if (!dsl_dataset_is_before(bmark_fs, snapds, 0)) {
-		dsl_dataset_rele(bmark_fs, FTAG);
-		return (SET_ERROR(EINVAL));
+	/* Verify that the new bookmark does not already exist */
+	error = dsl_bookmark_lookup_impl(newbm_ds, newbm_short, &bmark_phys);
+	switch (error) {
+	case ESRCH:
+		/* happy path: new bmark doesn't exist, proceed after switch */
+		error = 0;
+		break;
+	case 0:
+		error = SET_ERROR(EEXIST);
+		goto eholdnewbmds;
+	default:
+		/* dsl_bookmark_lookup_impl already did SET_ERRROR */
+		goto eholdnewbmds;
 	}
 
-	error = dsl_bookmark_lookup_impl(bmark_fs, shortname,
-	    &bmark_phys);
-	dsl_dataset_rele(bmark_fs, FTAG);
-	if (error == 0)
-		return (SET_ERROR(EEXIST));
-	if (error == ESRCH)
-		return (0);
+	/* error is retval of the following if-cascade */
+	if (strchr(source, '@') != NULL) {
+		dsl_dataset_t *source_snap_ds;
+		ASSERT3S(snapshot_namecheck(source, NULL, NULL), ==, 0);
+		error = dsl_dataset_hold(dp, source, FTAG, &source_snap_ds);
+		if (error == 0) {
+			VERIFY(source_snap_ds->ds_is_snapshot);
+			/*
+			 * Verify that source snapshot is an earlier point in
+			 * newbm_ds's timeline (source may be newbm_ds's origin)
+			 */
+			if (!dsl_dataset_is_before(newbm_ds, source_snap_ds, 0))
+				error = SET_ERROR(
+				    ZFS_ERR_BOOKMARK_SOURCE_NOT_ANCESTOR);
+			dsl_dataset_rele(source_snap_ds, FTAG);
+		}
+	} else if (strchr(source, '#') != NULL) {
+		zfs_bookmark_phys_t source_phys;
+		ASSERT3S(bookmark_namecheck(source, NULL, NULL), ==, 0);
+		/*
+		 * Source must exists and be an earlier point in newbm_ds's
+		 * timeline (newbm_ds's origin may be a snap of source's ds)
+		 */
+		error = dsl_bookmark_lookup(dp, source, newbm_ds, &source_phys);
+		switch (error) {
+		case 0:
+			break; /* happy path */
+		case EXDEV:
+			error = SET_ERROR(ZFS_ERR_BOOKMARK_SOURCE_NOT_ANCESTOR);
+			break;
+		default:
+			/* dsl_bookmark_lookup already did SET_ERRROR */
+			break;
+		}
+	} else {
+		/*
+		 * dsl_bookmark_create_nvl_validate validates that source is
+		 * either snapshot or bookmark
+		 */
+		panic("unreachable code: %s", source);
+	}
+
+eholdnewbmds:
+	dsl_dataset_rele(newbm_ds, FTAG);
 	return (error);
 }
 
-static int
+int
 dsl_bookmark_create_check(void *arg, dmu_tx_t *tx)
 {
 	dsl_bookmark_create_arg_t *dbca = arg;
-	dsl_pool_t *dp = dmu_tx_pool(tx);
 	int rv = 0;
+	int schema_err = 0;
+	ASSERT3P(dbca, !=, NULL);
+	ASSERT3P(dbca->dbca_bmarks, !=, NULL);
+	/* dbca->dbca_errors is allowed to be NULL */
+
+	dsl_pool_t *dp = dmu_tx_pool(tx);
 
 	if (!spa_feature_is_enabled(dp->dp_spa, SPA_FEATURE_BOOKMARKS))
 		return (SET_ERROR(ENOTSUP));
 
+	if (dsl_bookmark_create_nvl_validate(dbca->dbca_bmarks) != 0)
+		rv = schema_err = SET_ERROR(EINVAL);
+
 	for (nvpair_t *pair = nvlist_next_nvpair(dbca->dbca_bmarks, NULL);
 	    pair != NULL; pair = nvlist_next_nvpair(dbca->dbca_bmarks, pair)) {
-		dsl_dataset_t *snapds;
-		int error;
+		char *new = nvpair_name(pair);
 
-		/* note: validity of nvlist checked by ioctl layer */
-		error = dsl_dataset_hold(dp, fnvpair_value_string(pair),
-		    FTAG, &snapds);
+		int error = schema_err;
 		if (error == 0) {
-			error = dsl_bookmark_create_check_impl(snapds,
-			    nvpair_name(pair), tx);
-			dsl_dataset_rele(snapds, FTAG);
+			char *source = fnvpair_value_string(pair);
+			error = dsl_bookmark_create_check_impl(dp, new, source);
+			if (error != 0)
+				error = SET_ERROR(error);
 		}
+
 		if (error != 0) {
-			fnvlist_add_int32(dbca->dbca_errors,
-			    nvpair_name(pair), error);
 			rv = error;
+			if (dbca->dbca_errors != NULL)
+				fnvlist_add_int32(dbca->dbca_errors,
+				    new, error);
 		}
 	}
 
@@ -255,6 +387,10 @@ dsl_bookmark_set_phys(zfs_bookmark_phys_t *zbm, dsl_dataset_t *snap)
 	}
 }
 
+/*
+ * Add dsl_bookmark_node_t `dbn` to the given dataset and increment appropriate
+ * SPA feature counters.
+ */
 void
 dsl_bookmark_node_add(dsl_dataset_t *hds, dsl_bookmark_node_t *dbn,
     dmu_tx_t *tx)
@@ -304,7 +440,7 @@ dsl_bookmark_node_add(dsl_dataset_t *hds, dsl_bookmark_node_t *dbn,
  * list, and store the object number of the redaction list in redact_obj.
  */
 static void
-dsl_bookmark_create_sync_impl(const char *bookmark, const char *snapshot,
+dsl_bookmark_create_sync_impl_snap(const char *bookmark, const char *snapshot,
     dmu_tx_t *tx, uint64_t num_redact_snaps, uint64_t *redact_snaps, void *tag,
     redaction_list_t **redaction_list)
 {
@@ -377,7 +513,76 @@ dsl_bookmark_create_sync_impl(const char *bookmark, const char *snapshot,
 	dsl_dataset_rele(snapds, FTAG);
 }
 
+
 static void
+dsl_bookmark_create_sync_impl_book(
+    const char *new_name, const char *source_name, dmu_tx_t *tx)
+{
+	dsl_pool_t *dp = dmu_tx_pool(tx);
+	dsl_dataset_t *bmark_fs_source, *bmark_fs_new;
+	char *source_shortname, *new_shortname;
+	zfs_bookmark_phys_t source_phys;
+
+	VERIFY0(dsl_bookmark_hold_ds(dp, source_name, &bmark_fs_source, FTAG,
+	    &source_shortname));
+	VERIFY0(dsl_bookmark_hold_ds(dp, new_name, &bmark_fs_new, FTAG,
+	    &new_shortname));
+
+	/*
+	 * create a copy of the source bookmark by copying most of its members
+	 *
+	 * Caveat: bookmarking a redaction bookmark yields a normal bookmark
+	 * -----------------------------------------------------------------
+	 * Reasoning:
+	 * - The zbm_redaction_obj would be referred to by both source and new
+	 *   bookmark, but would be destroyed once either source or new is
+	 *   destroyed, resulting in use-after-free of the referrred object.
+	 * - User expectation when issuing the `zfs bookmark` command is that
+	 *   a normal bookmark of the source is created
+	 *
+	 * Design Alternatives For Full Redaction Bookmark Copying:
+	 * - reference-count the redaction object => would require on-disk
+	 *   format change for existing redaction objects
+	 * - Copy the redaction object => cannot be done in syncing context
+	 *   because the redaction object might be too large
+	 */
+
+	VERIFY0(dsl_bookmark_lookup_impl(bmark_fs_source, source_shortname,
+	    &source_phys));
+	dsl_bookmark_node_t *new_dbn = dsl_bookmark_node_alloc(new_shortname);
+
+	memcpy(&new_dbn->dbn_phys, &source_phys, sizeof (source_phys));
+	new_dbn->dbn_phys.zbm_redaction_obj = 0;
+
+	/* update feature counters */
+	if (new_dbn->dbn_phys.zbm_flags & ZBM_FLAG_HAS_FBN) {
+		spa_feature_incr(dp->dp_spa,
+		    SPA_FEATURE_BOOKMARK_WRITTEN, tx);
+	}
+	/* no need for redaction bookmark counter; nulled zbm_redaction_obj */
+	/* dsl_bookmark_node_add bumps bookmarks and v2-bookmarks counter */
+
+	/*
+	 * write new bookmark
+	 *
+	 * Note that dsl_bookmark_lookup_impl guarantees that, if source is a
+	 * v1 bookmark, the v2-only fields are zeroed.
+	 * And dsl_bookmark_node_add writes back a v1-sized bookmark if
+	 * v2 bookmarks are disabled and/or v2-only fields are zeroed.
+	 * => bookmark copying works on pre-bookmark-v2 pools
+	 */
+	dsl_bookmark_node_add(bmark_fs_new, new_dbn, tx);
+
+	spa_history_log_internal_ds(bmark_fs_source, "bookmark", tx,
+	    "name=%s creation_txg=%llu source_guid=%llu",
+	    new_shortname, (longlong_t)new_dbn->dbn_phys.zbm_creation_txg,
+	    (longlong_t)source_phys.zbm_guid);
+
+	dsl_dataset_rele(bmark_fs_source, FTAG);
+	dsl_dataset_rele(bmark_fs_new, FTAG);
+}
+
+void
 dsl_bookmark_create_sync(void *arg, dmu_tx_t *tx)
 {
 	dsl_bookmark_create_arg_t *dbca = arg;
@@ -387,8 +592,19 @@ dsl_bookmark_create_sync(void *arg, dmu_tx_t *tx)
 
 	for (nvpair_t *pair = nvlist_next_nvpair(dbca->dbca_bmarks, NULL);
 	    pair != NULL; pair = nvlist_next_nvpair(dbca->dbca_bmarks, pair)) {
-		dsl_bookmark_create_sync_impl(nvpair_name(pair),
-		    fnvpair_value_string(pair), tx, 0, NULL, NULL, NULL);
+
+		char *new = nvpair_name(pair);
+		char *source = fnvpair_value_string(pair);
+
+		if (strchr(source, '@') != NULL) {
+			dsl_bookmark_create_sync_impl_snap(new, source, tx,
+			    0, NULL, NULL, NULL);
+		} else if (strchr(source, '#') != NULL) {
+			dsl_bookmark_create_sync_impl_book(new, source, tx);
+		} else {
+			panic("unreachable code");
+		}
+
 	}
 }
 
@@ -418,7 +634,6 @@ dsl_bookmark_create_redacted_check(void *arg, dmu_tx_t *tx)
 {
 	dsl_bookmark_create_redacted_arg_t *dbcra = arg;
 	dsl_pool_t *dp = dmu_tx_pool(tx);
-	dsl_dataset_t *snapds;
 	int rv = 0;
 
 	if (!spa_feature_is_enabled(dp->dp_spa,
@@ -432,13 +647,12 @@ dsl_bookmark_create_redacted_check(void *arg, dmu_tx_t *tx)
 	    sizeof (redaction_list_phys_t)) / sizeof (uint64_t))
 		return (SET_ERROR(E2BIG));
 
-	rv = dsl_dataset_hold(dp, dbcra->dbcra_snap,
-	    FTAG, &snapds);
-	if (rv == 0) {
-		rv = dsl_bookmark_create_check_impl(snapds, dbcra->dbcra_bmark,
-		    tx);
-		dsl_dataset_rele(snapds, FTAG);
-	}
+	if (dsl_bookmark_create_nvl_validate_pair(
+	    dbcra->dbcra_bmark, dbcra->dbcra_snap) != 0)
+		return (SET_ERROR(EINVAL));
+
+	rv = dsl_bookmark_create_check_impl(dp,
+	    dbcra->dbcra_bmark, dbcra->dbcra_snap);
 	return (rv);
 }
 
@@ -446,9 +660,9 @@ static void
 dsl_bookmark_create_redacted_sync(void *arg, dmu_tx_t *tx)
 {
 	dsl_bookmark_create_redacted_arg_t *dbcra = arg;
-	dsl_bookmark_create_sync_impl(dbcra->dbcra_bmark, dbcra->dbcra_snap, tx,
-	    dbcra->dbcra_numsnaps, dbcra->dbcra_snaps, dbcra->dbcra_tag,
-	    dbcra->dbcra_rl);
+	dsl_bookmark_create_sync_impl_snap(dbcra->dbcra_bmark,
+	    dbcra->dbcra_snap, tx, dbcra->dbcra_numsnaps, dbcra->dbcra_snaps,
+	    dbcra->dbcra_tag, dbcra->dbcra_rl);
 }
 
 int
@@ -595,16 +809,16 @@ dsl_bookmark_compare(const void *l, const void *r)
 	const dsl_bookmark_node_t *ldbn = l;
 	const dsl_bookmark_node_t *rdbn = r;
 
-	int64_t cmp = AVL_CMP(ldbn->dbn_phys.zbm_creation_txg,
+	int64_t cmp = TREE_CMP(ldbn->dbn_phys.zbm_creation_txg,
 	    rdbn->dbn_phys.zbm_creation_txg);
 	if (likely(cmp))
 		return (cmp);
-	cmp = AVL_CMP((ldbn->dbn_phys.zbm_flags & ZBM_FLAG_HAS_FBN),
+	cmp = TREE_CMP((ldbn->dbn_phys.zbm_flags & ZBM_FLAG_HAS_FBN),
 	    (rdbn->dbn_phys.zbm_flags & ZBM_FLAG_HAS_FBN));
 	if (likely(cmp))
 		return (cmp);
 	cmp = strcmp(ldbn->dbn_name, rdbn->dbn_name);
-	return (AVL_ISIGN(cmp));
+	return (TREE_ISIGN(cmp));
 }
 
 /*
@@ -1347,33 +1561,6 @@ dsl_bookmark_latest_txg(dsl_dataset_t *ds)
 	return (dbn->dbn_phys.zbm_creation_txg);
 }
 
-static inline unsigned int
-redact_block_buf_num_entries(unsigned int size)
-{
-	return (size / sizeof (redact_block_phys_t));
-}
-
-/*
- * This function calculates the offset of the last entry in the array of
- * redact_block_phys_t.  If we're reading the redaction list into buffers of
- * size bufsize, then for all but the last buffer, the last valid entry in the
- * array will be the last entry in the array.  However, for the last buffer, any
- * amount of it may be filled.  Thus, we check to see if we're looking at the
- * last buffer in the redaction list, and if so, we return the total number of
- * entries modulo the number of entries per buffer.  Otherwise, we return the
- * number of entries per buffer minus one.
- */
-static inline unsigned int
-last_entry(redaction_list_t *rl, unsigned int bufsize, uint64_t bufid)
-{
-	if (bufid == (rl->rl_phys->rlp_num_entries - 1) /
-	    redact_block_buf_num_entries(bufsize)) {
-		return ((rl->rl_phys->rlp_num_entries - 1) %
-		    redact_block_buf_num_entries(bufsize));
-	}
-	return (redact_block_buf_num_entries(bufsize) - 1);
-}
-
 /*
  * Compare the redact_block_phys_t to the bookmark. If the last block in the
  * redact_block_phys_t is before the bookmark, return -1.  If the first block in
@@ -1419,8 +1606,6 @@ dsl_redaction_list_traverse(redaction_list_t *rl, zbookmark_phys_t *resume,
     rl_traverse_callback_t cb, void *arg)
 {
 	objset_t *mos = rl->rl_mos;
-	redact_block_phys_t *buf;
-	unsigned int bufsize = SPA_OLD_MAXBLOCKSIZE;
 	int err = 0;
 
 	if (rl->rl_phys->rlp_last_object != UINT64_MAX ||
@@ -1437,42 +1622,48 @@ dsl_redaction_list_traverse(redaction_list_t *rl, zbookmark_phys_t *resume,
 	}
 
 	/*
-	 * Binary search for the point to resume from.  The goal is to minimize
-	 * the number of disk reads we have to perform.
+	 * This allows us to skip the binary search and resume checking logic
+	 * below, if we're not resuming a redacted send.
 	 */
-	buf = zio_data_buf_alloc(bufsize);
-	uint64_t maxbufid = (rl->rl_phys->rlp_num_entries - 1) /
-	    redact_block_buf_num_entries(bufsize);
-	uint64_t minbufid = 0;
-	while (resume != NULL && maxbufid - minbufid >= 1) {
-		ASSERT3U(maxbufid, >, minbufid);
-		uint64_t midbufid = minbufid + ((maxbufid - minbufid) / 2);
-		err = dmu_read(mos, rl->rl_object, midbufid * bufsize, bufsize,
-		    buf, DMU_READ_NO_PREFETCH);
+	if (ZB_IS_ZERO(resume))
+		resume = NULL;
+
+	/*
+	 * Binary search for the point to resume from.
+	 */
+	uint64_t maxidx = rl->rl_phys->rlp_num_entries - 1;
+	uint64_t minidx = 0;
+	while (resume != NULL && maxidx > minidx) {
+		redact_block_phys_t rbp = { 0 };
+		ASSERT3U(maxidx, >, minidx);
+		uint64_t mididx = minidx + ((maxidx - minidx) / 2);
+		err = dmu_read(mos, rl->rl_object, mididx * sizeof (rbp),
+		    sizeof (rbp), &rbp, DMU_READ_NO_PREFETCH);
 		if (err != 0)
 			break;
 
-		int cmp0 = redact_block_zb_compare(&buf[0], resume);
-		int cmpn = redact_block_zb_compare(
-		    &buf[last_entry(rl, bufsize, maxbufid)], resume);
+		int cmp = redact_block_zb_compare(&rbp, resume);
 
-		/*
-		 * If the first block is before or equal to the resume point,
-		 * and the last one is equal or after, then the resume point is
-		 * in this buf, and we should start here.
-		 */
-		if (cmp0 <= 0 && cmpn >= 0)
+		if (cmp == 0) {
+			minidx = mididx;
 			break;
-
-		if (cmp0 > 0)
-			maxbufid = midbufid - 1;
-		else if (cmpn < 0)
-			minbufid = midbufid + 1;
-		else
-			panic("No progress in binary search for resume point");
+		} else if (cmp > 0) {
+			maxidx =
+			    (mididx == minidx ? minidx : mididx - 1);
+		} else {
+			minidx = mididx + 1;
+		}
 	}
 
-	for (uint64_t curidx = minbufid * redact_block_buf_num_entries(bufsize);
+	unsigned int bufsize = SPA_OLD_MAXBLOCKSIZE;
+	redact_block_phys_t *buf = zio_data_buf_alloc(bufsize);
+
+	unsigned int entries_per_buf = bufsize / sizeof (redact_block_phys_t);
+	uint64_t start_block = minidx / entries_per_buf;
+	err = dmu_read(mos, rl->rl_object, start_block * bufsize, bufsize, buf,
+	    DMU_READ_PREFETCH);
+
+	for (uint64_t curidx = minidx;
 	    err == 0 && curidx < rl->rl_phys->rlp_num_entries;
 	    curidx++) {
 		/*
@@ -1482,22 +1673,35 @@ dsl_redaction_list_traverse(redaction_list_t *rl, zbookmark_phys_t *resume,
 		 * prefetching, and this code shouldn't be the bottleneck, so we
 		 * don't need to do manual prefetching.
 		 */
-		if (curidx % redact_block_buf_num_entries(bufsize) == 0) {
+		if (curidx % entries_per_buf == 0) {
 			err = dmu_read(mos, rl->rl_object, curidx *
 			    sizeof (*buf), bufsize, buf,
 			    DMU_READ_PREFETCH);
 			if (err != 0)
 				break;
 		}
-		redact_block_phys_t *rb = &buf[curidx %
-		    redact_block_buf_num_entries(bufsize)];
+		redact_block_phys_t *rb = &buf[curidx % entries_per_buf];
 		/*
 		 * If resume is non-null, we should either not send the data, or
 		 * null out resume so we don't have to keep doing these
 		 * comparisons.
 		 */
 		if (resume != NULL) {
+			/*
+			 * It is possible that after the binary search we got
+			 * a record before the resume point. There's two cases
+			 * where this can occur. If the record is the last
+			 * redaction record, and the resume point is after the
+			 * end of the redacted data, curidx will be the last
+			 * redaction record. In that case, the loop will end
+			 * after this iteration. The second case is if the
+			 * resume point is between two redaction records, the
+			 * binary search can return either the record before
+			 * or after the resume point. In that case, the next
+			 * iteration will be greater than the resume point.
+			 */
 			if (redact_block_zb_compare(rb, resume) < 0) {
+				ASSERT3U(curidx, ==, minidx);
 				continue;
 			} else {
 				/*
@@ -1519,8 +1723,10 @@ dsl_redaction_list_traverse(redaction_list_t *rl, zbookmark_phys_t *resume,
 			}
 		}
 
-		if (cb(rb, arg) != 0)
+		if (cb(rb, arg) != 0) {
+			err = EINTR;
 			break;
+		}
 	}
 
 	zio_data_buf_free(buf, bufsize);

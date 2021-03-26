@@ -20,17 +20,18 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2015 by Delphix. All rights reserved.
+ * Copyright (c) 2012, 2021 by Delphix. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
-#include <sys/refcount.h>
+#include <sys/zfs_refcount.h>
 
-#ifdef _KERNEL
-int reference_tracking_enable = FALSE; /* runs out of memory too easily */
-#else
-int reference_tracking_enable = TRUE;
-#endif
+/*
+ * Reference count tracking is disabled by default.  It's memory requirements
+ * are reasonable, however as implemented it consumes a significant amount of
+ * cpu time.  Until its performance is improved it should be manually enabled.
+ */
+int reference_tracking_enable = FALSE;
 int reference_history = 3; /* tunable */
 
 #ifdef	ZFS_DEBUG
@@ -121,7 +122,7 @@ zfs_refcount_count(zfs_refcount_t *rc)
 }
 
 int64_t
-zfs_refcount_add_many(zfs_refcount_t *rc, uint64_t number, void *holder)
+zfs_refcount_add_many(zfs_refcount_t *rc, uint64_t number, const void *holder)
 {
 	reference_t *ref = NULL;
 	int64_t count;
@@ -143,13 +144,14 @@ zfs_refcount_add_many(zfs_refcount_t *rc, uint64_t number, void *holder)
 }
 
 int64_t
-zfs_refcount_add(zfs_refcount_t *rc, void *holder)
+zfs_refcount_add(zfs_refcount_t *rc, const void *holder)
 {
 	return (zfs_refcount_add_many(rc, 1, holder));
 }
 
 int64_t
-zfs_refcount_remove_many(zfs_refcount_t *rc, uint64_t number, void *holder)
+zfs_refcount_remove_many(zfs_refcount_t *rc, uint64_t number,
+    const void *holder)
 {
 	reference_t *ref;
 	int64_t count;
@@ -197,7 +199,7 @@ zfs_refcount_remove_many(zfs_refcount_t *rc, uint64_t number, void *holder)
 }
 
 int64_t
-zfs_refcount_remove(zfs_refcount_t *rc, void *holder)
+zfs_refcount_remove(zfs_refcount_t *rc, const void *holder)
 {
 	return (zfs_refcount_remove_many(rc, 1, holder));
 }
@@ -235,7 +237,7 @@ zfs_refcount_transfer(zfs_refcount_t *dst, zfs_refcount_t *src)
 
 void
 zfs_refcount_transfer_ownership_many(zfs_refcount_t *rc, uint64_t number,
-    void *current_holder, void *new_holder)
+    const void *current_holder, const void *new_holder)
 {
 	reference_t *ref;
 	boolean_t found = B_FALSE;
@@ -260,8 +262,8 @@ zfs_refcount_transfer_ownership_many(zfs_refcount_t *rc, uint64_t number,
 }
 
 void
-zfs_refcount_transfer_ownership(zfs_refcount_t *rc, void *current_holder,
-    void *new_holder)
+zfs_refcount_transfer_ownership(zfs_refcount_t *rc, const void *current_holder,
+    const void *new_holder)
 {
 	return (zfs_refcount_transfer_ownership_many(rc, 1, current_holder,
 	    new_holder));
@@ -273,7 +275,7 @@ zfs_refcount_transfer_ownership(zfs_refcount_t *rc, void *current_holder,
  * might be held.
  */
 boolean_t
-zfs_refcount_held(zfs_refcount_t *rc, void *holder)
+zfs_refcount_held(zfs_refcount_t *rc, const void *holder)
 {
 	reference_t *ref;
 
@@ -301,7 +303,7 @@ zfs_refcount_held(zfs_refcount_t *rc, void *holder)
  * since the reference might not be held.
  */
 boolean_t
-zfs_refcount_not_held(zfs_refcount_t *rc, void *holder)
+zfs_refcount_not_held(zfs_refcount_t *rc, const void *holder)
 {
 	reference_t *ref;
 
@@ -322,4 +324,12 @@ zfs_refcount_not_held(zfs_refcount_t *rc, void *holder)
 	mutex_exit(&rc->rc_mtx);
 	return (B_TRUE);
 }
+
+/* BEGIN CSTYLED */
+ZFS_MODULE_PARAM(zfs, ,reference_tracking_enable, INT, ZMOD_RW,
+	"Track reference holders to refcount_t objects");
+
+ZFS_MODULE_PARAM(zfs, ,reference_history, INT, ZMOD_RW,
+	"Maximum reference holders being tracked");
+/* END CSTYLED */
 #endif	/* ZFS_DEBUG */
