@@ -567,26 +567,16 @@ static int
 zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct inode *ip = filp->f_mapping->host;
-	znode_t *zp = ITOZ(ip);
-	int error;
-	fstrans_cookie_t cookie;
 
-	cookie = spl_fstrans_mark();
-	error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
+	fstrans_cookie_t cookie = spl_fstrans_mark();
+	int error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
 	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags);
 	spl_fstrans_unmark(cookie);
+
 	if (error)
 		return (error);
 
-	error = generic_file_mmap(filp, vma);
-	if (error)
-		return (error);
-
-	mutex_enter(&zp->z_lock);
-	zp->z_is_mapped = B_TRUE;
-	mutex_exit(&zp->z_lock);
-
-	return (error);
+	return (generic_file_mmap(filp, vma));
 }
 
 /*
@@ -709,6 +699,12 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 		wbc->sync_mode = WB_SYNC_ALL;
 
 	return (zpl_putpage(pp, wbc, pp->mapping));
+}
+
+static int
+zpl_set_page_dirty(struct page *pp)
+{
+	return (__set_page_dirty_nobuffers(pp));
 }
 
 /*
@@ -1009,6 +1005,7 @@ const struct address_space_operations zpl_address_space_operations = {
 	.readpage	= zpl_readpage,
 	.writepage	= zpl_writepage,
 	.writepages	= zpl_writepages,
+	.set_page_dirty	= zpl_set_page_dirty,
 	.direct_IO	= zpl_direct_IO,
 };
 
