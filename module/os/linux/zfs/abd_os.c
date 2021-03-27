@@ -500,6 +500,7 @@ abd_alloc_zero_scatter(void)
 
 #define	zfs_kmap_atomic(chunk)		((void *)chunk)
 #define	zfs_kmap(chunk)			((void *)chunk)
+#define zfs_kunmap_atomic(addr)     do { (void)(addr); } while (0)
 #define	zfs_kunmap(chunk)		((void *)chunk)
 #define	local_irq_save(flags)		do { (void)(flags); } while (0)
 #define	local_irq_restore(flags)	do { (void)(flags); } while (0)
