@@ -31,6 +31,7 @@
 
 /* 2.6.37 API change */
 #define	zfs_kmap_atomic(page)	kmap_atomic(page)
+#define        zfs_kunmap_atomic(addr) kunmap_atomic(addr)
 #define	zfs_kmap(page)				kmap(page)
 #define	zfs_kunmap(page)			kunmap(page)
 
