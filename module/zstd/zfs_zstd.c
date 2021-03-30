@@ -761,6 +761,7 @@ zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 static int __init
 zstd_mem_init(void)
 {
+	aprint("ADAM: USING OBJECT POOLS!  WOO!\n");
 	objpool_init(&cctx_pool);
 	objpool_init(&dctx_pool);
 	return (0);
