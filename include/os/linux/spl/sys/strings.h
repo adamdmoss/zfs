@@ -23,8 +23,8 @@
 
 #include <linux/string.h>
 
-#define	bzero(ptr, size)		memset(ptr, 0, size)
-#define	bcopy(src, dest, size)		memmove(dest, src, size)
-#define	bcmp(src, dest, size)		memcmp((src), (dest), (size_t)(size))
+#define	bzero(ptr, size)		__builtin_memset(ptr, 0, size)
+#define	bcopy(src, dest, size)		__builtin_memmove(dest, src, size)
+#define	bcmp(src, dest, size)		__builtin_memcmp((src), (dest), (size_t)(size))
 
 #endif	/* _SPL_SYS_STRINGS_H */
