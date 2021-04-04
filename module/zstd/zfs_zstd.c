@@ -364,9 +364,8 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 		}
 	}
 	mutex_exit(&objpool->listlock);
-	if (likely(got_slot)) {
-		objpool_reset_idle_timer(objpool);
-	} else {
+	objpool_reset_idle_timer(objpool);
+	if (unlikely(got_slot)) {
 		/*
 		 * If there's no space in the pool to keep it,
 		 * just destroy the object now.
