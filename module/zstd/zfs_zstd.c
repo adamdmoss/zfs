@@ -352,7 +352,6 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	ASSERT3P(obj, !=, NULL);
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
-	ASSERT3U(objcount, >, 0);
 	boolean_t got_slot = B_FALSE;
 	for (int i = 0; i < objcount; ++i)
 	{
