@@ -172,7 +172,7 @@ static struct zstd_levelmap zstd_levels[] = {
 
 /////////////////////////////////////////// OBJECT POOLING UTILS
 ////////////////////////////////////////////////////////////////
-#define NERF_OBJ_POOL 0 /* ==1 to skip pool and use raw obj alloc/free always */
+#define NERF_OBJ_POOL 0 /* >0 to skip pool and use raw obj alloc/free always */
 #define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
 
 #define OBJPOOL_TIMEOUT_SEC 15
@@ -498,6 +498,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
+#if 0 // STREAM COMPRESSION
 	const size_t dest_limit = d_len - sizeof(*hdr);
 	const size_t MAXGULP = 4096;
 	size_t src_remain = s_len;
@@ -570,6 +571,14 @@ badc:
 
 	//aprint("compressedSize: %zu -> %zu(/%zu) (iserr?%d - %s)\n", s_len, compressedSize, dest_limit, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
 	c_len = compressedSize;
+#else
+	// MONOLITHIC COMPRESSION
+
+	c_len = ZSTD_compress2(cctx,
+	    hdr->data,
+	    d_len - sizeof (*hdr),
+	    s_start, s_len);
+#endif
 
 	obj_ungrab(&cctx_pool, cctx);
 
