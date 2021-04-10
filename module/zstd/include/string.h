@@ -51,6 +51,10 @@ extern "C" {
 #error "Unsupported platform"
 #endif
 
+#else /* !_KERNEL */
+#include_next <string.h>
+#endif /* _KERNEL */
+
 /*
  * GCC/Clang doesn't know that the kernel's memcpy (etc)
  * are standards-compliant so it can't be sure that it
@@ -62,7 +66,7 @@ extern "C" {
  * considers this profitable, falling back to the
  * kernel's memcpy (etc) otherwise.
  */
-#if defined(__GNUC__) && __GNUC__ >= 4
+#if defined (_KERNEL) && defined(__GNUC__) && __GNUC__ >= 4
 # define ZSTD_memcpy(d,s,l) __builtin_memcpy((d),(s),(l))
 # define ZSTD_memmove(d,s,l) __builtin_memmove((d),(s),(l))
 # define ZSTD_memset(p,v,l) __builtin_memset((p),(v),(l))
@@ -71,10 +75,6 @@ extern "C" {
 # define ZSTD_memmove(d,s,l) memmove((d),(s),(l))
 # define ZSTD_memset(p,v,l) memset((p),(v),(l))
 #endif
-
-#else /* !_KERNEL */
-#include_next <string.h>
-#endif /* _KERNEL */
 
 #ifdef __cplusplus
 }
