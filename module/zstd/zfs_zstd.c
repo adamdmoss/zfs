@@ -52,7 +52,7 @@
 
 
 #if defined(__KERNEL__)
-#if 0
+#if 1
 extern	int printk(const char *fmt, ...);
 #define aprint printk
 #else
@@ -90,6 +90,19 @@ static zstd_stats_t zstd_stats = {
 	{ "buffers",			KSTAT_DATA_UINT64 },
 	{ "size",			KSTAT_DATA_UINT64 },
 };
+
+static int randbit(void)
+{
+	static uint32_t b = 1;
+	++b;
+	/* First semi-decent integer hash I found, overkill for 1 bit but whatever */
+	uint32_t a = (b ^ 61) ^ (b >> 16);
+	a = a + (a << 3);
+	a = a ^ (a >> 4);
+	a = a * 0x27d4eb2d;
+	a = a ^ (a >> 15);
+	return a & 1;
+}
 
 /*
  * structure for allocation metadata, since zstd memory interface
@@ -302,7 +315,7 @@ obj_grab(objpool_t *const objpool)
 		if (grabbed_obj!=NULL)
 		{
 			int newlistbytes = sizeof(void *) * (objpool->count + 1);
-			void **newlist = kmem_alloc(newlistbytes, KM_NOSLEEP);
+			void **newlist = randbit()?kmem_alloc(newlistbytes, KM_NOSLEEP):NULL;
 			if (newlist!=NULL)
 			{
 				newlist[0] = NULL;
@@ -352,7 +365,6 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	ASSERT3P(obj, !=, NULL);
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
-	ASSERT3U(objcount, >, 0);
 	boolean_t got_slot = B_FALSE;
 	for (int i = 0; i < objcount; ++i)
 	{
@@ -732,7 +744,7 @@ zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 
 	//aprint("zstd_alloc_cb(try_harder=%p(%d), size=%d)\n", opaque, try_harder, (int)size);
 
-	z = vmem_alloc(nbytes, KM_NOSLEEP);
+	z = randbit()?vmem_alloc(nbytes, KM_NOSLEEP):NULL;
 	if (!z) {
 		ZSTDSTAT_BUMP(zstd_stat_alloc_fail);
 	 	if(try_harder) {
