@@ -364,7 +364,7 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	}
 	mutex_exit(&objpool->listlock);
 	objpool_reset_idle_timer(objpool);
-	if (unlikely(got_slot)) {
+	if (unlikely(!got_slot)) {
 		/*
 		 * If there's no space in the pool to keep it,
 		 * just destroy the object now.
@@ -595,7 +595,7 @@ badc:
 		 */
 		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
 		{
-			aprint("ZSTD: genuine ERROR status (%s)... ending\n", ZSTD_getErrorString(c_len));
+			aprint("ZSTD: genuine ERROR status (%s)... ending\n", ZSTD_getErrorName(c_len));
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
 		}
 		else
