@@ -115,7 +115,7 @@
  * Similarly to ZIL blocks, the core part of each dnode_phys_t needs to be left
  * in plaintext for scrubbing and claiming, but the bonus buffers might contain
  * sensitive user data. The function zio_crypt_init_uios_dnode() handles parsing
- * which which pieces of the block need to be encrypted. For more details about
+ * which pieces of the block need to be encrypted. For more details about
  * dnode authentication and encryption, see zio_crypt_init_uios_dnode().
  *
  * OBJECT SET AUTHENTICATION:
@@ -1412,6 +1412,7 @@ zio_crypt_init_uios_zil(boolean_t encrypt, uint8_t *plainbuf,
 		nr_src = 1;
 		nr_dst = 0;
 	}
+	bzero(dst, datalen);
 
 	/* find the start and end record of the log block */
 	zilc = (zil_chain_t *)src;

@@ -761,7 +761,7 @@ zvol_cdev_read(struct cdev *dev, struct uio *uio_s, int ioflag)
 	volsize = zv->zv_volsize;
 	/*
 	 * uio_loffset == volsize isn't an error as
-	 * its required for EOF processing.
+	 * it's required for EOF processing.
 	 */
 	if (zfs_uio_resid(&uio) > 0 &&
 	    (zfs_uio_offset(&uio) < 0 || zfs_uio_offset(&uio) > volsize))
@@ -1163,6 +1163,9 @@ zvol_ensure_zilog(zvol_state_t *zv)
 			zv->zv_zilog = zil_open(zv->zv_objset,
 			    zvol_get_data);
 			zv->zv_flags |= ZVOL_WRITTEN_TO;
+			/* replay / destroy done in zvol_create_minor_impl() */
+			VERIFY0((zv->zv_zilog->zl_header->zh_flags &
+			    ZIL_REPLAY_NEEDED));
 		}
 		rw_downgrade(&zv->zv_suspend_lock);
 	}
@@ -1387,12 +1390,16 @@ zvol_create_minor_impl(const char *name)
 	zv->zv_volsize = volsize;
 	zv->zv_objset = os;
 
+	ASSERT3P(zv->zv_zilog, ==, NULL);
+	zv->zv_zilog = zil_open(os, zvol_get_data);
 	if (spa_writeable(dmu_objset_spa(os))) {
 		if (zil_replay_disable)
-			zil_destroy(dmu_objset_zil(os), B_FALSE);
+			zil_destroy(zv->zv_zilog, B_FALSE);
 		else
 			zil_replay(os, zv, zvol_replay_vector);
 	}
+	zil_close(zv->zv_zilog);
+	zv->zv_zilog = NULL;
 	ASSERT3P(zv->zv_kstat.dk_kstats, ==, NULL);
 	dataset_kstats_create(&zv->zv_kstat, zv->zv_objset);
 

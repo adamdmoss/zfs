@@ -661,7 +661,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 
 	/*
 	 * NOTE: We ignore the ZSTD version for now. As soon as any
-	 * incompatibility occurrs, it has to be handled accordingly.
+	 * incompatibility occurs, it has to be handled accordingly.
 	 * The version can be accessed via `hdr_copy.version`.
 	 */
 
