@@ -577,6 +577,10 @@ badc:
 	    hdr->data,
 	    d_len - sizeof (*hdr),
 	    s_start, s_len);
+	
+	if (ZSTD_isError(c_len)) {
+		ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+	}
 #endif
 
 	obj_ungrab(&cctx_pool, cctx);
