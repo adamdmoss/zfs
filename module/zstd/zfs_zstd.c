@@ -51,18 +51,6 @@
 #include "lib/zstd_errors.h"
 
 
-#if defined(__KERNEL__)
-#if 0
-extern	int printk(const char *fmt, ...);
-#define aprint printk
-#else
-#define aprint(...) do{}while(0)
-#endif
-#else
-#define aprint(...) printf(__VA_ARGS__)
-#endif
-
-
 kstat_t *zstd_ksp = NULL;
 
 typedef struct zstd_stats {
@@ -170,10 +158,7 @@ static struct zstd_levelmap zstd_levels[] = {
 	{-1000, ZIO_ZSTD_LEVEL_FAST_1000},
 };
 
-/////////////////////////////////////////// OBJECT POOLING UTILS
-////////////////////////////////////////////////////////////////
-#define NERF_OBJ_POOL 0 /* >0 to skip pool and use raw obj alloc/free always */
-#define GRABAMP 0 /*>0 to amplify grab/ungrab contention for testing*/
+/* Object-pool implementation */
 
 #define OBJPOOL_TIMEOUT_SEC 15
 
@@ -185,6 +170,7 @@ typedef struct {
 
 	int64_t last_accessed_jiffy; /* for idle-reap */
 
+	/* Must be set by user */
 	void*(*obj_alloc)(void);
 	void(*obj_free)(void*);
 	void(*obj_reset)(void*);
@@ -223,9 +209,8 @@ objpool_clearunused(objpool_t *const objpool)
 	{
 		if (unlikely(NULL == objpool->list[i]))
 		{
-			// if ANY object is still in use then don't do anything
+			/* if ANY object is still in use then don't do anything */
 			mutex_exit(&objpool->listlock);
-			aprint("ADAM: pool \"%s\" reap aborting, entry#%d still in use\n", objpool->pool_name, i);
 			return;
 		}
 	}
@@ -235,14 +220,13 @@ objpool_clearunused(objpool_t *const objpool)
 	}
 	if (objpool->count > 0)
 	{
-		VERIFY3P(objpool->list, !=, NULL);
+		ASSERT3P(objpool->list, !=, NULL);
 		kmem_free(objpool->list, sizeof(void *) * objpool->count);
 		objpool->list = NULL;
-		//aprint("ADAM: pool \"%s\" reap completed, %d entries removed\n", objpool->pool_name, objpool->count);
 	}
 	else
 	{
-		VERIFY3P(objpool->list, ==, NULL);
+		ASSERT3P(objpool->list, ==, NULL);
 	}
 	objpool->count = 0;
 	mutex_exit(&objpool->listlock);
@@ -276,10 +260,6 @@ objpool_destroy(objpool_t *const objpool)
 static void*
 obj_grab(objpool_t *const objpool)
 {
-#if NERF_OBJ_POOL
-	return objpool->obj_alloc();
-#endif
-
 	void* grabbed_obj = NULL;
 	mutex_enter(&objpool->listlock);
 	const int objcount = objpool->count;
@@ -291,13 +271,13 @@ obj_grab(objpool_t *const objpool)
 			break;
 		}
 	}
-	if (likely(grabbed_obj!=NULL))
+	if (likely(grabbed_obj != NULL))
 	{
+		/* grabbed pooled object; reset it to a reusable state */
 		objpool->obj_reset(grabbed_obj);
 	}
 	else
 	{
-		//aprint("ADAM: pool \"%s\" growing list from %d to %d entries\n", objpool->pool_name, objpool->count, 1 + objpool->count);
 		grabbed_obj = objpool->obj_alloc();
 		if (grabbed_obj!=NULL)
 		{
@@ -308,34 +288,32 @@ obj_grab(objpool_t *const objpool)
 				newlist[0] = NULL;
 				if (objpool->count > 0)
 				{
-					VERIFY3P(objpool->list, !=, NULL);
+					ASSERT3P(objpool->list, !=, NULL);
 					memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
 					kmem_free(objpool->list, sizeof(void *) * (objpool->count));
 				}
 				else
 				{
-					VERIFY3P(objpool->list, ==, NULL);
+					ASSERT3P(objpool->list, ==, NULL);
 				}
 				objpool->list = newlist;
 				++objpool->count;
-				// total success
-				//aprint("ADAM: expanded lists and grabbed new entry %p\n", grabbed_obj);
+				/* object created and metadata grown; total success */
 			}
 			else
 			{
-				aprint("ADAM: failed to grow pool '%s' - returning obj %p anyway\n", objpool->pool_name, grabbed_obj);
 				/*
+				 * Failed to grow the pool.
 				 * This is okay; we can still return the new object,
 				 * but the next ungrab()'d object might not find a
-				 * spare pool slot (in which case it'll just be
-				 * destroyed cleanly when ungrab()'d).
+				 * spare pool slot (in which case the object will just
+				 * be destroyed cleanly when ungrab()'d).
 				 */
 			}
 		}
 		else
 		{
-			/* failed to alloc new object; this is okay */
-			aprint("ADAM: failed to alloc new obj in pool '%s'\n", objpool->pool_name);
+			/* failed to alloc new object, will return NULL */
 		}
 	}
 	mutex_exit(&objpool->listlock);
@@ -345,13 +323,19 @@ obj_grab(objpool_t *const objpool)
 static void
 obj_ungrab(objpool_t *const objpool, void* const obj)
 {
-#if NERF_OBJ_POOL
-	return objpool->obj_free(obj);
-#endif
-
 	ASSERT3P(obj, !=, NULL);
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
+#ifdef DEBUG
+	for (int i = 0; i < objcount; ++i)
+	{
+		/*
+		 * if the ungrab'd object is already in the pool
+		 * then something's gone very wrong.
+		 */
+		ASSERT3P(objpool->list[i], !=, obj);
+	}
+#endif /* DEBUG */
 	boolean_t got_slot = B_FALSE;
 	for (int i = 0; i < objcount; ++i)
 	{
@@ -370,12 +354,10 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 		 * just destroy the object now.
 		 */
 		objpool->obj_free(obj);
-		aprint("ADAM: Ungrabbed obj %p with no free pool slot in pool '%s' - destroyed obj.\n", obj, objpool->pool_name);
 	}
 }
 
-/////////////////////////////////////////// OBJECT POOLS
-////////////////////////////////////////////////////////
+/* Callbacks for our compression/decompression object pools */
 
 static void *
 cctx_alloc(void)
@@ -472,7 +454,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, >=, sizeof (*hdr));
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
-	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&cctx_pool); if(foo) obj_ungrab(&cctx_pool, foo);}
+	
 	cctx = obj_grab(&cctx_pool);
 
 	/*
@@ -497,92 +479,14 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
 	ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 0);
 
-#if 0 // STREAM COMPRESSION
-	const size_t dest_limit = d_len - sizeof(*hdr);
-	const size_t MAXGULP = 4096;
-	size_t src_remain = s_len;
-	char* src_ptr = s_start;
-	size_t compressedSize = /*hack*/ (size_t)-ZSTD_error_GENERIC;
-	{
-		ZSTD_outBuffer outBuff = {hdr->data, dest_limit, 0};
-		for(;;)
-		{
-			int is_final_gulp = 0;
-			size_t this_gulp_size = MAXGULP;
-			if (src_remain <= this_gulp_size)
-			{
-				this_gulp_size = src_remain;
-				is_final_gulp = 1;
-			}
-			VERIFY3S(src_remain, >, 0);
-			ZSTD_inBuffer thisInBuff = {src_ptr, this_gulp_size, 0};
-			size_t status = ZSTD_compressStream2(cctx, &outBuff, &thisInBuff,
-			    is_final_gulp? ZSTD_e_end : ZSTD_e_continue);
-			if (unlikely(ZSTD_isError(status)))
-			{
-				compressedSize = status;
-				aprint("status was error: %s\n", ZSTD_getErrorName(status));
-
-				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem2: %s\n", ZSTD_getErrorName(rstatus));
-				goto badc;
-			}
-			if (outBuff.pos == outBuff.size)
-			{
-				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
-				//aprint("done(output full, input remains); outpos==outsize");
-
-				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem3: %s\n", ZSTD_getErrorName(rstatus));
-
-				goto badc; // ?
-			}
-			if (unlikely(is_final_gulp && status!= 0))
-			{
-				compressedSize = /*hacky fake error*/ (size_t)-ZSTD_error_dstSize_tooSmall;
-				aprint("FULL2(final gulp, need to write more (%d) but output not full (%d/%d)\n", (int)status, (int)outBuff.pos, (int)outBuff.size);
-				VERIFY3S(status, <, outBuff.size - outBuff.pos);
-
-				const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-				if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem4: %s\n", ZSTD_getErrorName(rstatus));
-
-				goto badc; // ?
-			}
-			VERIFY3U(thisInBuff.pos, ==, thisInBuff.size);
-			src_ptr += thisInBuff.pos;
-			VERIFY3U(src_remain, >=, thisInBuff.pos);
-			src_remain -= thisInBuff.pos;
-			if (src_remain == 0)
-			{
-				// totally done
-				break;
-			}
-#ifdef __KERNEL__
-			//kpreempt();
-#else
-#endif
-			cond_resched(); // possibly yield before taking next gulp
-		}
-
-		compressedSize = outBuff.pos;
-	}
-badc:
-
-	//aprint("compressedSize: %zu -> %zu(/%zu) (iserr?%d - %s)\n", s_len, compressedSize, dest_limit, ZSTD_isError(compressedSize), ZSTD_getErrorName(compressedSize));
-	c_len = compressedSize;
-#else
-	// MONOLITHIC COMPRESSION
-
 	c_len = ZSTD_compress2(cctx,
 	    hdr->data,
 	    d_len - sizeof (*hdr),
 	    s_start, s_len);
 	
 	if (ZSTD_isError(c_len)) {
-		const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
-		if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem4: %s\n", ZSTD_getErrorName(rstatus));
+		(void) ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 	}
-#endif
 
 	obj_ungrab(&cctx_pool, cctx);
 
@@ -595,12 +499,7 @@ badc:
 		 */
 		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
 		{
-			aprint("ZSTD: genuine ERROR status (%s)... ending\n", ZSTD_getErrorName(c_len));
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
-		}
-		else
-		{
-			//aprint("(dest was too small?)... ending");
 		}
 		return (s_len);
 	}
@@ -689,9 +588,13 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 		return (1);
 	}
 
-	for (int i=0; i<GRABAMP; ++i) { void* foo = obj_grab(&dctx_pool); if(foo) obj_ungrab(&dctx_pool, foo);}
 	dctx = obj_grab(&dctx_pool);
+	ASSERT3P(dctx, !=, NULL);
 	if (unlikely(!dctx)) {
+		/*
+		 * really shouldn't happen - dctx allocations can't fail
+		 * - but we'll defend against it anyway.
+		 */
 		ZSTDSTAT_BUMP(zstd_stat_dec_alloc_fail);
 		return (1);
 	}
@@ -709,8 +612,7 @@ zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
 	if (unlikely(ZSTD_isError(result))) {
 		ZSTDSTAT_BUMP(zstd_stat_dec_fail);
 
-		const size_t rstatus = ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
-		if (ZSTD_isError(rstatus)) aprint("uh-oh, dctx reset problem1: %s\n", ZSTD_getErrorName(rstatus));
+		(void) ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
 
 		obj_ungrab(&dctx_pool, dctx);
 		return (1);
@@ -742,8 +644,6 @@ zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 	struct zstd_kmem_hdr *z;
 	size_t nbytes = sizeof (*z) + size;
 
-	//aprint("zstd_alloc_cb(try_harder=%p(%d), size=%d)\n", opaque, try_harder, (int)size);
-
 	z = vmem_alloc(nbytes, KM_NOSLEEP);
 	if (!z) {
 		ZSTDSTAT_BUMP(zstd_stat_alloc_fail);
@@ -765,7 +665,6 @@ static void
 zstd_free_cb(void *opaque __maybe_unused, void *ptr)
 {
 	ASSERT3P(ptr, !=, NULL);
-	//aprint("zstd_free_cb(try_harder=%p(%d), ptr=%p)\n", opaque, opaque != NULL, ptr);
 	struct zstd_kmem_hdr *z = (ptr - sizeof (struct zstd_kmem_hdr));
 	vmem_free(z, z->kmem_size);
 }
