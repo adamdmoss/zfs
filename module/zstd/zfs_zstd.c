@@ -352,7 +352,6 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	ASSERT3P(obj, !=, NULL);
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
-	ASSERT3U(objcount, >, 0);
 	boolean_t got_slot = B_FALSE;
 	for (int i = 0; i < objcount; ++i)
 	{
@@ -578,6 +577,11 @@ badc:
 	    hdr->data,
 	    d_len - sizeof (*hdr),
 	    s_start, s_len);
+	
+	if (ZSTD_isError(c_len)) {
+		const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+		if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem4: %s\n", ZSTD_getErrorName(rstatus));
+	}
 #endif
 
 	obj_ungrab(&cctx_pool, cctx);
@@ -591,7 +595,7 @@ badc:
 		 */
 		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
 		{
-			aprint("ERROR status... ending\n");
+			aprint("ZSTD: genuine ERROR status (%s)... ending\n", ZSTD_getErrorName(c_len));
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
 		}
 		else
