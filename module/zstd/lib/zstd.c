@@ -1,6 +1,3 @@
-#define ZSTD_memset __builtin_memset
-#define ZSTD_memmove __builtin_memmove
-#define ZSTD_memcpy __builtin_memcpy
 /*
  * BSD 3-Clause Clear License
  *
