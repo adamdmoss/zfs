@@ -579,7 +579,8 @@ badc:
 	    s_start, s_len);
 	
 	if (ZSTD_isError(c_len)) {
-		ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+		const size_t rstatus = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+		if (ZSTD_isError(rstatus)) aprint("uh-oh, cctx reset problem4: %s\n", ZSTD_getErrorName(rstatus));
 	}
 #endif
 
@@ -594,7 +595,7 @@ badc:
 		 */
 		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
 		{
-			aprint("ERROR status... ending\n");
+			aprint("ZSTD: genuine ERROR status (%s)... ending\n", ZSTD_getErrorString(c_len));
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
 		}
 		else
