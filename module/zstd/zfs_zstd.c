@@ -50,7 +50,6 @@
 #include "lib/zstd.h"
 #include "lib/zstd_errors.h"
 
-
 kstat_t *zstd_ksp = NULL;
 
 typedef struct zstd_stats {
