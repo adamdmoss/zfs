@@ -159,7 +159,7 @@ static struct zstd_levelmap zstd_levels[] = {
 
 /* Object-pool implementation */
 
-#define OBJPOOL_TIMEOUT_SEC 15
+#define	OBJPOOL_TIMEOUT_SEC 15
 
 typedef struct {
 	/* Access to 'count' and 'list' must hold 'listlock' */
@@ -173,7 +173,7 @@ typedef struct {
 	void*(*obj_alloc)(void);
 	void(*obj_free)(void*);
 	void(*obj_reset)(void*);
-	const char* const pool_name;
+	const char * const pool_name;
 } objpool_t;
 
 static void objpool_init(objpool_t *const objpool);
@@ -204,27 +204,21 @@ static void
 objpool_clearunused(objpool_t *const objpool)
 {
 	mutex_enter(&objpool->listlock);
-	for (int i = 0; i < objpool->count; ++i)
-	{
-		if (unlikely(NULL == objpool->list[i]))
-		{
-			/* if ANY object is still in use then don't do anything */
+	for (int i = 0; i < objpool->count; ++i) {
+		/* if ANY object is still in use then don't do anything */
+		if (unlikely(NULL == objpool->list[i])) {
 			mutex_exit(&objpool->listlock);
 			return;
 		}
 	}
-	for (int i = 0; i < objpool->count; ++i)
-	{
+	for (int i = 0; i < objpool->count; ++i) {
 		objpool->obj_free(objpool->list[i]);
 	}
-	if (objpool->count > 0)
-	{
+	if (objpool->count > 0) {
 		ASSERT3P(objpool->list, !=, NULL);
-		kmem_free(objpool->list, sizeof(void *) * objpool->count);
+		kmem_free(objpool->list, sizeof (void *) * objpool->count);
 		objpool->list = NULL;
-	}
-	else
-	{
+	} else {
 		ASSERT3P(objpool->list, ==, NULL);
 	}
 	objpool->count = 0;
@@ -235,10 +229,9 @@ static void
 objpool_reap(objpool_t *const objpool)
 {
 	int64_t now_jiffy = ddi_get_lbolt64();
-	if (objpool->last_accessed_jiffy > now_jiffy /*wrap!*/
-	    || now_jiffy - objpool->last_accessed_jiffy
-		    > SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC))
-	{
+	if (objpool->last_accessed_jiffy > now_jiffy ||
+	    now_jiffy - objpool->last_accessed_jiffy
+	    > SEC_TO_TICK(OBJPOOL_TIMEOUT_SEC)) {
 		objpool_clearunused(objpool);
 		objpool_reset_idle_timer(objpool);
 	}
@@ -250,8 +243,7 @@ objpool_destroy(objpool_t *const objpool)
 	objpool_clearunused(objpool);
 	VERIFY3U(objpool->count, ==, 0);
 
-	if (objpool->count == 0)
-	{
+	if (objpool->count == 0) {
 		mutex_destroy(&objpool->listlock);
 	}
 }
@@ -262,61 +254,50 @@ obj_grab(objpool_t *const objpool)
 	void* grabbed_obj = NULL;
 	mutex_enter(&objpool->listlock);
 	const int objcount = objpool->count;
-	for (int i = 0; i < objcount; ++i)
-	{
-		if ((grabbed_obj = objpool->list[i]) != NULL)
-		{
+	for (int i = 0; i < objcount; ++i) {
+		if ((grabbed_obj = objpool->list[i]) != NULL) {
 			objpool->list[i] = NULL;
 			break;
 		}
 	}
-	if (likely(grabbed_obj != NULL))
-	{
+	if (likely(grabbed_obj != NULL)) {
 		/* grabbed pooled object; reset it to a reusable state */
 		objpool->obj_reset(grabbed_obj);
-	}
-	else
-	{
+	} else {
 		grabbed_obj = objpool->obj_alloc();
-		if (grabbed_obj!=NULL)
-		{
-			int newlistbytes = sizeof(void *) * (objpool->count + 1);
+		if (grabbed_obj != NULL) {
+			int newlistbytes = sizeof (void *)
+			    * (objpool->count + 1);
 			void **newlist = kmem_alloc(newlistbytes, KM_NOSLEEP);
-			if (newlist!=NULL)
-			{
+			if (newlist != NULL) {
 				newlist[0] = NULL;
-				if (objpool->count > 0)
-				{
+				if (objpool->count > 0) {
 					ASSERT3P(objpool->list, !=, NULL);
-					memcpy(&newlist[1], &objpool->list[0], sizeof(void *) * (objpool->count));
-					kmem_free(objpool->list, sizeof(void *) * (objpool->count));
-				}
-				else
-				{
+					memcpy(&newlist[1], &objpool->list[0],
+					    sizeof (void *) * (objpool->count));
+					kmem_free(objpool->list, sizeof (void *)
+					    * (objpool->count));
+				} else {
 					ASSERT3P(objpool->list, ==, NULL);
 				}
 				objpool->list = newlist;
 				++objpool->count;
-				/* object created and metadata grown; total success */
-			}
-			else
-			{
+			} else {
 				/*
 				 * Failed to grow the pool.
-				 * This is okay; we can still return the new object,
-				 * but the next ungrab()'d object might not find a
-				 * spare pool slot (in which case the object will just
-				 * be destroyed cleanly when ungrab()'d).
+				 * This is okay; we can still return the new
+				 * object, but the next ungrab()'d object might
+				 * not find a spare pool slot (in which case the
+				 * object will just be destroyed cleanly when
+				 * ungrab()'d).
 				 */
 			}
-		}
-		else
-		{
+		} else {
 			/* failed to alloc new object, will return NULL */
 		}
 	}
 	mutex_exit(&objpool->listlock);
-	return grabbed_obj;
+	return (grabbed_obj);
 }
 
 static void
@@ -326,8 +307,7 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	mutex_enter(&objpool->listlock);
 	int const objcount = objpool->count;
 #ifdef DEBUG
-	for (int i = 0; i < objcount; ++i)
-	{
+	for (int i = 0; i < objcount; ++i) {
 		/*
 		 * if the ungrab'd object is already in the pool
 		 * then something's gone very wrong.
@@ -336,10 +316,8 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 	}
 #endif /* DEBUG */
 	boolean_t got_slot = B_FALSE;
-	for (int i = 0; i < objcount; ++i)
-	{
-		if (objpool->list[i] == NULL)
-		{
+	for (int i = 0; i < objcount; ++i) {
+		if (objpool->list[i] == NULL) {
 			objpool->list[i] = obj;
 			got_slot = B_TRUE;
 			break;
@@ -361,7 +339,7 @@ obj_ungrab(objpool_t *const objpool, void* const obj)
 static void *
 cctx_alloc(void)
 {
-	return ZSTD_createCCtx_advanced(zstd_cctx_custommem);
+	return (ZSTD_createCCtx_advanced(zstd_cctx_custommem));
 }
 static void
 cctx_free(void *ptr)
@@ -381,7 +359,7 @@ cctx_reset(void *ptr)
 static void *
 dctx_alloc(void)
 {
-	return ZSTD_createDCtx_advanced(zstd_dctx_custommem);
+	return (ZSTD_createDCtx_advanced(zstd_dctx_custommem));
 }
 static void
 dctx_free(void *ptr)
@@ -453,7 +431,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	ASSERT3U(d_len, >=, sizeof (*hdr));
 	ASSERT3U(d_len, <=, s_len);
 	ASSERT3U(zstd_level, !=, 0);
-	
+
 	cctx = obj_grab(&cctx_pool);
 
 	/*
@@ -482,7 +460,7 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 	    hdr->data,
 	    d_len - sizeof (*hdr),
 	    s_start, s_len);
-	
+
 	if (ZSTD_isError(c_len)) {
 		(void) ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
 	}
@@ -496,8 +474,8 @@ zfs_zstd_compress(void *s_start, void *d_start, size_t s_len, size_t d_len,
 		 * too small, that is not a failure. Everything else is a
 		 * failure, so increment the compression failure counter.
 		 */
-		if (unlikely(ZSTD_getErrorCode(c_len) != ZSTD_error_dstSize_tooSmall))
-		{
+		if (unlikely(ZSTD_getErrorCode(c_len) !=
+		    ZSTD_error_dstSize_tooSmall)) {
 			ZSTDSTAT_BUMP(zstd_stat_com_fail);
 		}
 		return (s_len);
@@ -646,15 +624,14 @@ zstd_alloc_cb(void *opaque __maybe_unused, size_t size)
 	z = vmem_alloc(nbytes, KM_NOSLEEP);
 	if (!z) {
 		ZSTDSTAT_BUMP(zstd_stat_alloc_fail);
-	 	if(try_harder) {
+		if (try_harder) {
 			/* Try harder, KM_SLEEP implies that it can't fail */
 			z = vmem_alloc(nbytes, KM_SLEEP);
-		}
-		else {
+		} else {
 			return (NULL);
 		}
 	}
-	
+
 	z->kmem_size = nbytes;
 	return ((void*)z->data);
 }

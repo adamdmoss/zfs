@@ -66,14 +66,14 @@ extern "C" {
  * considers this profitable, falling back to the
  * kernel's memcpy (etc) otherwise.
  */
-#if defined (_KERNEL) && defined(__GNUC__) && __GNUC__ >= 4
-# define ZSTD_memcpy(d,s,l) __builtin_memcpy((d),(s),(l))
-# define ZSTD_memmove(d,s,l) __builtin_memmove((d),(s),(l))
-# define ZSTD_memset(p,v,l) __builtin_memset((p),(v),(l))
+#if defined(_KERNEL) && defined(__GNUC__) && __GNUC__ >= 4
+#define	ZSTD_memcpy(d, s, l) __builtin_memcpy((d), (s), (l))
+#define	ZSTD_memmove(d, s, l) __builtin_memmove((d), (s), (l))
+#define	ZSTD_memset(p, v, l) __builtin_memset((p), (v), (l))
 #else
-# define ZSTD_memcpy(d,s,l) memcpy((d),(s),(l))
-# define ZSTD_memmove(d,s,l) memmove((d),(s),(l))
-# define ZSTD_memset(p,v,l) memset((p),(v),(l))
+#define	ZSTD_memcpy(d, s, l) memcpy((d), (s), (l))
+#define	ZSTD_memmove(d, s, l) memmove((d), (s), (l))
+#define	ZSTD_memset(p, v, l) memset((p), (v), (l))
 #endif
 
 #ifdef __cplusplus
