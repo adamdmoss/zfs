@@ -15,7 +15,7 @@ KERNEL_C = \
 nodist_libzstd_la_SOURCES = $(KERNEL_C)
 
 # see also: module/zstd/Makefile.in for the
-# kernel-build equivilents of these rules
+# kernel-build equivalents of these rules
 
 lib/zstd.$(OBJEXT):  CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w -I$(top_srcdir)/module/zstd/include
 lib/zstd.l$(OBJEXT): CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w -I$(top_srcdir)/module/zstd/include

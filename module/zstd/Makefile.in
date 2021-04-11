@@ -14,7 +14,7 @@ asflags-y := -I$(zstd_include)
 ccflags-y := -I$(zstd_include)
 
 # see also: lib/libzstd/Makefile.am for the
-# userspace-build equivilents of these rules
+# userspace-build equivalents of these rules
 
 # Zstd uses -O3 by default, so we should follow
 ccflags-y += -O3
