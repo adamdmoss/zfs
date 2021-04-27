@@ -2,7 +2,7 @@
 
 sudo echo
 
-rm -rf zfs-dkms* *.rpm *.deb;./autogen.sh && ./configure --disable-silent-rules --enable-debuginfo --with-config=srpm && V=1 make -j12 pkg-utils deb-dkms && (sudo zstd --rm -9 /lib/modules/*/kernel/zfs/*.ko;sudo dkms remove --force-version-override --verbose zfs/2.1.99 --all && sudo apt remove `for file in *.deb; do (echo $file|sed -E 's/([^_]+)_.+/\1/'); done` ;for file in *.deb; do sudo gdebi -n $file || (echo NOOOOO ; cat </dev/stdin); done) && sudo dkms install --force-version-override --force zfs/2.1.99 && rm *.deb *.rpm zfs-*.*.*.tar.gz
+rm -rf zfs-dkms* *.rpm *.deb;./autogen.sh && ./configure --disable-silent-rules --enable-debuginfo --with-config=srpm && V=1 make -j24 pkg-utils deb-dkms && (sudo zstd --rm -9 /lib/modules/*/kernel/zfs/*.ko;sudo dkms remove --force-version-override --verbose zfs/2.1.99 --all && sudo apt remove `for file in *.deb; do (echo $file|sed -E 's/([^_]+)_.+/\1/'); done` ;for file in *.deb; do sudo gdebi -n $file || (echo NOOOOO ; cat </dev/stdin); done) && sudo dkms install --force-version-override --force zfs/2.1.99 && rm *.deb *.rpm zfs-*.*.*.tar.gz
 sudo depmod -a
 
 date
