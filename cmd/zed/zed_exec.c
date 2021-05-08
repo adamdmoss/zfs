@@ -3,7 +3,7 @@
  *
  * Developed at Lawrence Livermore National Laboratory (LLNL-CODE-403049).
  * Copyright (C) 2013-2014 Lawrence Livermore National Security, LLC.
- * Refer to the ZoL git commit log for authoritative copyright attribution.
+ * Refer to the OpenZFS git commit log for authoritative copyright attribution.
  *
  * The contents of this file are subject to the terms of the
  * Common Development and Distribution License Version 1.0 (CDDL-1.0).
@@ -142,8 +142,10 @@ _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
 		    prog, eid, strerror(ENAMETOOLONG));
 		return;
 	}
+	(void) pthread_mutex_lock(&_launched_processes_lock);
 	pid = fork();
 	if (pid < 0) {
+		(void) pthread_mutex_unlock(&_launched_processes_lock);
 		zed_log_msg(LOG_WARNING,
 		    "Failed to fork \"%s\" for eid=%llu: %s",
 		    prog, eid, strerror(errno));
@@ -166,20 +168,19 @@ _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
 
 	/* parent process */
 
-	__atomic_sub_fetch(&_launched_processes_limit, 1, __ATOMIC_SEQ_CST);
-	zed_log_msg(LOG_INFO, "Invoking \"%s\" eid=%llu pid=%d",
-	    prog, eid, pid);
-
 	node = calloc(1, sizeof (*node));
 	if (node) {
 		node->pid = pid;
 		node->eid = eid;
 		node->name = strdup(prog);
 
-		(void) pthread_mutex_lock(&_launched_processes_lock);
 		avl_add(&_launched_processes, node);
-		(void) pthread_mutex_unlock(&_launched_processes_lock);
 	}
+	(void) pthread_mutex_unlock(&_launched_processes_lock);
+
+	__atomic_sub_fetch(&_launched_processes_limit, 1, __ATOMIC_SEQ_CST);
+	zed_log_msg(LOG_INFO, "Invoking \"%s\" eid=%llu pid=%d",
+	    prog, eid, pid);
 }
 
 static void
