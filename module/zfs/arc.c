@@ -4685,7 +4685,7 @@ arc_evict(void)
 	// (re)count metadata+data after arc_evict_meta()
 	if (total_evicted > 0)
 	{
-		ameta = aggsum_value(&arc_sums.arcstat);
+		ameta = aggsum_value(&arc_sums.arcstat_meta_used);
 	}
 
 	uint64_t asize = aggsum_value(&arc_sums.arcstat_size);
