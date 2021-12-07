@@ -199,7 +199,6 @@ vdev_geom_orphan(struct g_consumer *cp)
 	 * async removal support to invoke a close on this
 	 * vdev once it is safe to do so.
 	 */
-	// cppcheck-suppress All
 	SLIST_FOREACH(elem, priv, elems) {
 		// cppcheck-suppress uninitvar
 		vdev_t *vd = elem->vd;
@@ -381,7 +380,11 @@ vdev_geom_io(struct g_consumer *cp, int *cmds, void **datas, off_t *offsets,
 	int i, n_bios, j;
 	size_t bios_size;
 
+#if __FreeBSD_version > 1300130
+	maxio = maxphys - (maxphys % cp->provider->sectorsize);
+#else
 	maxio = MAXPHYS - (MAXPHYS % cp->provider->sectorsize);
+#endif
 	n_bios = 0;
 
 	/* How many bios are required for all commands ? */
@@ -1095,6 +1098,10 @@ static int
 vdev_geom_check_unmapped(zio_t *zio, struct g_consumer *cp)
 {
 	struct vdev_geom_check_unmapped_cb_state s;
+
+	/* If unmapped I/O is administratively disabled, respect that. */
+	if (!unmapped_buf_allowed)
+		return (0);
 
 	/* If the buffer is already linear, then nothing to do here. */
 	if (abd_is_linear(zio->io_abd))

@@ -69,8 +69,7 @@
 
 #include "zutil_import.h"
 
-/*PRINTFLIKE2*/
-static void
+static __attribute__((format(printf, 2, 3))) void
 zutil_error_aux(libpc_handle_t *hdl, const char *fmt, ...)
 {
 	va_list ap;
@@ -104,8 +103,7 @@ zutil_verror(libpc_handle_t *hdl, const char *error, const char *fmt,
 	}
 }
 
-/*PRINTFLIKE3*/
-static int
+static __attribute__((format(printf, 3, 4))) int
 zutil_error_fmt(libpc_handle_t *hdl, const char *error, const char *fmt, ...)
 {
 	va_list ap;
@@ -751,7 +749,7 @@ get_configs(libpc_handle_t *hdl, pool_list_t *pl, boolean_t active_ok,
 		    nvlist_add_uint64(nvroot, ZPOOL_CONFIG_ID, 0ULL) != 0 ||
 		    nvlist_add_uint64(nvroot, ZPOOL_CONFIG_GUID, guid) != 0 ||
 		    nvlist_add_nvlist_array(nvroot, ZPOOL_CONFIG_CHILDREN,
-		    child, children) != 0) {
+		    (const nvlist_t **)child, children) != 0) {
 			nvlist_free(nvroot);
 			goto nomem;
 		}
@@ -1034,9 +1032,11 @@ zpool_read_label(int fd, nvlist_t **config, int *num_labels)
 					// This shouldn't be possible to
 					// encounter, die if we do.
 					ASSERT(B_FALSE);
+					fallthrough;
 				case EOPNOTSUPP:
 				case ENOSYS:
 					do_slow = B_TRUE;
+					fallthrough;
 				case 0:
 				default:
 					(void) aio_return(&aiocbs[l]);
@@ -1237,7 +1237,7 @@ zpool_find_import_scan_dir(libpc_handle_t *hdl, pthread_mutex_t *lock,
 		if (error == ENOENT)
 			return (0);
 
-		zutil_error_aux(hdl, strerror(error));
+		zutil_error_aux(hdl, "%s", strerror(error));
 		(void) zutil_error_fmt(hdl, EZFS_BADPATH, dgettext(
 		    TEXT_DOMAIN, "cannot resolve path '%s'"), dir);
 		return (error);
@@ -1246,7 +1246,7 @@ zpool_find_import_scan_dir(libpc_handle_t *hdl, pthread_mutex_t *lock,
 	dirp = opendir(path);
 	if (dirp == NULL) {
 		error = errno;
-		zutil_error_aux(hdl, strerror(error));
+		zutil_error_aux(hdl, "%s", strerror(error));
 		(void) zutil_error_fmt(hdl, EZFS_BADPATH,
 		    dgettext(TEXT_DOMAIN, "cannot open '%s'"), path);
 		return (error);
@@ -1308,7 +1308,7 @@ zpool_find_import_scan_path(libpc_handle_t *hdl, pthread_mutex_t *lock,
 			goto out;
 		}
 
-		zutil_error_aux(hdl, strerror(error));
+		zutil_error_aux(hdl, "%s", strerror(error));
 		(void) zutil_error_fmt(hdl, EZFS_BADPATH, dgettext(
 		    TEXT_DOMAIN, "cannot resolve path '%s'"), dir);
 		goto out;
@@ -1346,7 +1346,7 @@ zpool_find_import_scan(libpc_handle_t *hdl, pthread_mutex_t *lock,
 			if (error == ENOENT)
 				continue;
 
-			zutil_error_aux(hdl, strerror(error));
+			zutil_error_aux(hdl, "%s", strerror(error));
 			(void) zutil_error_fmt(hdl, EZFS_BADPATH, dgettext(
 			    TEXT_DOMAIN, "cannot resolve path '%s'"), dir[i]);
 			goto error;
@@ -1705,6 +1705,8 @@ zpool_find_import_cached(libpc_handle_t *hdl, importargs_t *iarg)
 			return (NULL);
 		}
 
+		update_vdevs_config_dev_sysfs_path(src);
+
 		if ((dst = zutil_refresh_config(hdl, src)) == NULL) {
 			nvlist_free(raw);
 			nvlist_free(pools);
@@ -1858,4 +1860,71 @@ zpool_find_config(void *hdl, const char *target, nvlist_t **configp,
 	free(targetdup);
 
 	return (0);
+}
+
+/*
+ * Internal function for iterating over the vdevs.
+ *
+ * For each vdev, func() will be called and will be passed 'zhp' (which is
+ * typically the zpool_handle_t cast as a void pointer), the vdev's nvlist, and
+ * a user-defined data pointer).
+ *
+ * The return values from all the func() calls will be OR'd together and
+ * returned.
+ */
+int
+for_each_vdev_cb(void *zhp, nvlist_t *nv, pool_vdev_iter_f func,
+    void *data)
+{
+	nvlist_t **child;
+	uint_t c, children;
+	int ret = 0;
+	int i;
+	char *type;
+
+	const char *list[] = {
+	    ZPOOL_CONFIG_SPARES,
+	    ZPOOL_CONFIG_L2CACHE,
+	    ZPOOL_CONFIG_CHILDREN
+	};
+
+	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_TYPE, &type) != 0)
+		return (ret);
+
+	/* Don't run our function on root or indirect vdevs */
+	if ((strcmp(type, VDEV_TYPE_ROOT) != 0) &&
+	    (strcmp(type, VDEV_TYPE_INDIRECT) != 0)) {
+		ret |= func(zhp, nv, data);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(list); i++) {
+		if (nvlist_lookup_nvlist_array(nv, list[i], &child,
+		    &children) == 0) {
+			for (c = 0; c < children; c++) {
+				uint64_t ishole = 0;
+
+				(void) nvlist_lookup_uint64(child[c],
+				    ZPOOL_CONFIG_IS_HOLE, &ishole);
+
+				if (ishole)
+					continue;
+
+				ret |= for_each_vdev_cb(zhp, child[c],
+				    func, data);
+			}
+		}
+	}
+
+	return (ret);
+}
+
+/*
+ * Given an ZPOOL_CONFIG_VDEV_TREE nvpair, iterate over all the vdevs, calling
+ * func() for each one.  func() is passed the vdev's nvlist and an optional
+ * user-defined 'data' pointer.
+ */
+int
+for_each_vdev_in_nvlist(nvlist_t *nvroot, pool_vdev_iter_f func, void *data)
+{
+	return (for_each_vdev_cb(NULL, nvroot, func, data));
 }

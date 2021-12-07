@@ -389,7 +389,6 @@ uint64_t spa_max_slop = 128ULL * 1024 * 1024 * 1024;
 int spa_allocators = 4;
 
 
-/*PRINTFLIKE2*/
 void
 spa_load_failed(spa_t *spa, const char *fmt, ...)
 {
@@ -404,7 +403,6 @@ spa_load_failed(spa_t *spa, const char *fmt, ...)
 	    spa->spa_trust_config ? "trusted" : "untrusted", buf);
 }
 
-/*PRINTFLIKE2*/
 void
 spa_load_note(spa_t *spa, const char *fmt, ...)
 {
@@ -700,13 +698,12 @@ spa_add(const char *name, nvlist_t *config, const char *altroot)
 		spa->spa_root = spa_strdup(altroot);
 
 	spa->spa_alloc_count = spa_allocators;
-	spa->spa_alloc_locks = kmem_zalloc(spa->spa_alloc_count *
-	    sizeof (kmutex_t), KM_SLEEP);
-	spa->spa_alloc_trees = kmem_zalloc(spa->spa_alloc_count *
-	    sizeof (avl_tree_t), KM_SLEEP);
+	spa->spa_allocs = kmem_zalloc(spa->spa_alloc_count *
+	    sizeof (spa_alloc_t), KM_SLEEP);
 	for (int i = 0; i < spa->spa_alloc_count; i++) {
-		mutex_init(&spa->spa_alloc_locks[i], NULL, MUTEX_DEFAULT, NULL);
-		avl_create(&spa->spa_alloc_trees[i], zio_bookmark_compare,
+		mutex_init(&spa->spa_allocs[i].spaa_lock, NULL, MUTEX_DEFAULT,
+		    NULL);
+		avl_create(&spa->spa_allocs[i].spaa_tree, zio_bookmark_compare,
 		    sizeof (zio_t), offsetof(zio_t, io_alloc_node));
 	}
 	avl_create(&spa->spa_metaslabs_by_flushed, metaslab_sort_by_flushed,
@@ -799,13 +796,11 @@ spa_remove(spa_t *spa)
 	}
 
 	for (int i = 0; i < spa->spa_alloc_count; i++) {
-		avl_destroy(&spa->spa_alloc_trees[i]);
-		mutex_destroy(&spa->spa_alloc_locks[i]);
+		avl_destroy(&spa->spa_allocs[i].spaa_tree);
+		mutex_destroy(&spa->spa_allocs[i].spaa_lock);
 	}
-	kmem_free(spa->spa_alloc_locks, spa->spa_alloc_count *
-	    sizeof (kmutex_t));
-	kmem_free(spa->spa_alloc_trees, spa->spa_alloc_count *
-	    sizeof (avl_tree_t));
+	kmem_free(spa->spa_allocs, spa->spa_alloc_count *
+	    sizeof (spa_alloc_t));
 
 	avl_destroy(&spa->spa_metaslabs_by_flushed);
 	avl_destroy(&spa->spa_sm_logs_by_txg);
@@ -1838,29 +1833,27 @@ spa_update_dspace(spa_t *spa)
 {
 	spa->spa_dspace = metaslab_class_get_dspace(spa_normal_class(spa)) +
 	    ddt_get_dedup_dspace(spa);
-	if (spa->spa_vdev_removal != NULL) {
+	if (spa->spa_nonallocating_dspace > 0) {
 		/*
-		 * We can't allocate from the removing device, so subtract
-		 * its size if it was included in dspace (i.e. if this is a
-		 * normal-class vdev, not special/dedup).  This prevents the
-		 * DMU/DSL from filling up the (now smaller) pool while we
-		 * are in the middle of removing the device.
+		 * Subtract the space provided by all non-allocating vdevs that
+		 * contribute to dspace.  If a file is overwritten, its old
+		 * blocks are freed and new blocks are allocated.  If there are
+		 * no snapshots of the file, the available space should remain
+		 * the same.  The old blocks could be freed from the
+		 * non-allocating vdev, but the new blocks must be allocated on
+		 * other (allocating) vdevs.  By reserving the entire size of
+		 * the non-allocating vdevs (including allocated space), we
+		 * ensure that there will be enough space on the allocating
+		 * vdevs for this file overwrite to succeed.
 		 *
 		 * Note that the DMU/DSL doesn't actually know or care
 		 * how much space is allocated (it does its own tracking
 		 * of how much space has been logically used).  So it
 		 * doesn't matter that the data we are moving may be
-		 * allocated twice (on the old device and the new
-		 * device).
+		 * allocated twice (on the old device and the new device).
 		 */
-		spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
-		vdev_t *vd =
-		    vdev_lookup_top(spa, spa->spa_vdev_removal->svr_vdev_id);
-		if (vd->vdev_mg->mg_class == spa_normal_class(spa)) {
-			spa->spa_dspace -= spa_deflate(spa) ?
-			    vd->vdev_stat.vs_dspace : vd->vdev_stat.vs_space;
-		}
-		spa_config_exit(spa, SCL_VDEV, FTAG);
+		ASSERT3U(spa->spa_dspace, >=, spa->spa_nonallocating_dspace);
+		spa->spa_dspace -= spa->spa_nonallocating_dspace;
 	}
 }
 
@@ -2427,6 +2420,7 @@ spa_init(spa_mode_t mode)
 	zpool_prop_init();
 	zpool_feature_init();
 	spa_config_load();
+	vdev_prop_init();
 	l2arc_start();
 	scan_init();
 	qat_init();

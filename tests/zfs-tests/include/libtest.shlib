@@ -27,6 +27,7 @@
 # Copyright (c) 2017, Lawrence Livermore National Security LLC.
 # Copyright (c) 2017, Datto Inc. All rights reserved.
 # Copyright (c) 2017, Open-E Inc. All rights reserved.
+# Copyright (c) 2021, The FreeBSD Foundation.
 # Use is subject to license terms.
 #
 
@@ -251,7 +252,7 @@ function unmounted
 
 function splitline
 {
-	echo $1 | sed "s/,/ /g"
+	echo $1 | tr ',' ' '
 }
 
 function default_setup
@@ -1091,9 +1092,7 @@ function get_endslice #<disk> <slice>
 	case "$(uname)" in
 	Linux)
 		endcyl=$(parted -s $DEV_DSKDIR/$disk -- unit cyl print | \
-			grep "part${slice}" | \
-			awk '{print $3}' | \
-			sed 's,cyl,,')
+			awk "/part${slice}/"' {sub(/cyl/, "", $3); print $3}')
 		((endcyl = (endcyl + 1)))
 		;;
 	FreeBSD)
@@ -1460,7 +1459,7 @@ function is_shared_smb
 	if datasetnonexists "$fs" ; then
 		return 1
 	else
-		fs=$(echo $fs | sed 's@/@_@g')
+		fs=$(echo $fs | tr / _)
 	fi
 
 	if is_linux; then
@@ -4024,6 +4023,34 @@ function stat_size #<path>
 	esac
 }
 
+function stat_ctime #<path>
+{
+	typeset path=$1
+
+	case $(uname) in
+	FreeBSD)
+		stat -f %c "$path"
+		;;
+	*)
+		stat -c %Z "$path"
+		;;
+	esac
+}
+
+function stat_crtime #<path>
+{
+	typeset path=$1
+
+	case $(uname) in
+	FreeBSD)
+		stat -f %B "$path"
+		;;
+	*)
+		stat -c %W "$path"
+		;;
+	esac
+}
+
 # Run a command as if it was being run in a TTY.
 #
 # Usage:
@@ -4159,6 +4186,25 @@ function get_arcstat # stat
 		;;
 	Linux)
 		kstat arcstats | awk "/$stat/ { print \$3 }"
+		;;
+	*)
+		false
+		;;
+	esac
+}
+
+function punch_hole # offset length file
+{
+	typeset offset=$1
+	typeset length=$2
+	typeset file=$3
+
+	case $(uname) in
+	FreeBSD)
+		truncate -d -o $offset -l $length "$file"
+		;;
+	Linux)
+		fallocate --punch-hole --offset $offset --length $length "$file"
 		;;
 	*)
 		false
