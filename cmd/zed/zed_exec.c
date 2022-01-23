@@ -3,7 +3,7 @@
  *
  * Developed at Lawrence Livermore National Laboratory (LLNL-CODE-403049).
  * Copyright (C) 2013-2014 Lawrence Livermore National Security, LLC.
- * Refer to the ZoL git commit log for authoritative copyright attribution.
+ * Refer to the OpenZFS git commit log for authoritative copyright attribution.
  *
  * The contents of this file are subject to the terms of the
  * Common Development and Distribution License Version 1.0 (CDDL-1.0).
@@ -26,8 +26,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <signal.h>
+
 #include "zed_exec.h"
-#include "zed_file.h"
 #include "zed_log.h"
 #include "zed_strings.h"
 
@@ -116,7 +117,7 @@ _zed_exec_create_env(zed_strings_t *zsp)
  */
 static void
 _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
-    char *env[], int zfd)
+    char *env[], int zfd, boolean_t in_foreground)
 {
 	char path[PATH_MAX];
 	int n;
@@ -143,8 +144,10 @@ _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
 		    prog, eid, strerror(ENAMETOOLONG));
 		return;
 	}
+	(void) pthread_mutex_lock(&_launched_processes_lock);
 	pid = fork();
 	if (pid < 0) {
+		(void) pthread_mutex_unlock(&_launched_processes_lock);
 		zed_log_msg(LOG_WARNING,
 		    "Failed to fork \"%s\" for eid=%llu: %s",
 		    prog, eid, strerror(errno));
@@ -154,22 +157,18 @@ _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
 		(void) sigprocmask(SIG_SETMASK, &mask, NULL);
 
 		(void) umask(022);
-		if ((fd = open("/dev/null", O_RDWR)) != -1) {
+		if (in_foreground && /* we're already devnulled if daemonised */
+		    (fd = open("/dev/null", O_RDWR | O_CLOEXEC)) != -1) {
 			(void) dup2(fd, STDIN_FILENO);
 			(void) dup2(fd, STDOUT_FILENO);
 			(void) dup2(fd, STDERR_FILENO);
 		}
 		(void) dup2(zfd, ZEVENT_FILENO);
-		zed_file_close_from(ZEVENT_FILENO + 1);
 		execle(path, prog, NULL, env);
 		_exit(127);
 	}
 
 	/* parent process */
-
-	__atomic_sub_fetch(&_launched_processes_limit, 1, __ATOMIC_SEQ_CST);
-	zed_log_msg(LOG_INFO, "Invoking \"%s\" eid=%llu pid=%d",
-	    prog, eid, pid);
 
 	node = calloc(1, sizeof (*node));
 	if (node) {
@@ -177,19 +176,25 @@ _zed_exec_fork_child(uint64_t eid, const char *dir, const char *prog,
 		node->eid = eid;
 		node->name = strdup(prog);
 
-		(void) pthread_mutex_lock(&_launched_processes_lock);
 		avl_add(&_launched_processes, node);
-		(void) pthread_mutex_unlock(&_launched_processes_lock);
 	}
+	(void) pthread_mutex_unlock(&_launched_processes_lock);
+
+	__atomic_sub_fetch(&_launched_processes_limit, 1, __ATOMIC_SEQ_CST);
+	zed_log_msg(LOG_INFO, "Invoking \"%s\" eid=%llu pid=%d",
+	    prog, eid, pid);
 }
 
 static void
 _nop(int sig)
-{}
+{
+	(void) sig;
+}
 
 static void *
 _reap_children(void *arg)
 {
+	(void) arg;
 	struct launched_process_node node, *pnode;
 	pid_t pid;
 	int status;
@@ -206,10 +211,12 @@ _reap_children(void *arg)
 	(void) sigaction(SIGCHLD, &sa, NULL);
 
 	for (_reap_children_stop = B_FALSE; !_reap_children_stop; ) {
-		pid = wait4(0, &status, 0, &usage);
+		(void) pthread_mutex_lock(&_launched_processes_lock);
+		pid = wait4(0, &status, WNOHANG, &usage);
 
-		if (pid == (pid_t)-1) {
-			if (errno == ECHILD)
+		if (pid == 0 || pid == (pid_t)-1) {
+			(void) pthread_mutex_unlock(&_launched_processes_lock);
+			if (pid == 0 || errno == ECHILD)
 				pause();
 			else if (errno != EINTR)
 				zed_log_msg(LOG_WARNING,
@@ -218,7 +225,6 @@ _reap_children(void *arg)
 		} else {
 			memset(&node, 0, sizeof (node));
 			node.pid = pid;
-			(void) pthread_mutex_lock(&_launched_processes_lock);
 			pnode = avl_find(&_launched_processes, &node, NULL);
 			if (pnode) {
 				memcpy(&node, pnode, sizeof (node));
@@ -359,7 +365,7 @@ zed_exec_process(uint64_t eid, const char *class, const char *subclass,
 			n = strlen(*csp);
 			if ((strncmp(z, *csp, n) == 0) && !isalpha(z[n]))
 				_zed_exec_fork_child(eid, zcp->zedlet_dir,
-				    z, e, zcp->zevent_fd);
+				    z, e, zcp->zevent_fd, zcp->do_foreground);
 		}
 	}
 	free(e);
