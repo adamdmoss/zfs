@@ -214,11 +214,21 @@ objpool_init(objpool_t *const objpool)
 	objpool->list = NULL;
 	objpool_reset_idle_timer(objpool);
 }
+#if defined(__KERNEL__)
+extern int printk(const char *fmt, ...);
+#else
+#define printk(...) /**/
+#endif
 
 static void
 objpool_clearunused(objpool_t *const objpool)
 {
-	mutex_enter(&objpool->listlock);
+	if (!mutex_tryenter(&objpool->listlock))
+	{
+		printk("lockwait1\n");
+		mutex_enter(&objpool->listlock);
+	} else
+		printk("NOlockwait1\n");
 	for (int i = 0; i < objpool->count; ++i) {
 		/* if ANY object is still in use then don't do anything */
 		if (unlikely(NULL == objpool->list[i])) {
@@ -266,8 +276,14 @@ objpool_destroy(objpool_t *const objpool)
 static void*
 obj_grab(objpool_t *const objpool)
 {
-	void* grabbed_obj = NULL;
-	mutex_enter(&objpool->listlock);
+	void *grabbed_obj = NULL;
+	if (!mutex_tryenter(&objpool->listlock))
+	{
+		printk("lockwait2\n");
+		mutex_enter(&objpool->listlock);
+	}
+	else
+		printk("NOlockwait2\n");
 	const int objcount = objpool->count;
 	for (int i = 0; i < objcount; ++i) {
 		if ((grabbed_obj = objpool->list[i]) != NULL) {
@@ -319,7 +335,13 @@ static void
 obj_ungrab(objpool_t *const objpool, void* const obj)
 {
 	ASSERT3P(obj, !=, NULL);
-	mutex_enter(&objpool->listlock);
+	if (!mutex_tryenter(&objpool->listlock))
+	{
+		printk("lockwait3\n");
+		mutex_enter(&objpool->listlock);
+	}
+	else
+		printk("NOlockwait3\n");
 	int const objcount = objpool->count;
 #ifdef DEBUG
 	for (int i = 0; i < objcount; ++i) {
