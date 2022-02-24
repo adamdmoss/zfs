@@ -147,8 +147,6 @@ AC_CONFIG_FILES([
 	lib/libshare/Makefile
 	lib/libspl/Makefile
 	lib/libspl/include/Makefile
-	lib/libspl/include/ia32/Makefile
-	lib/libspl/include/ia32/sys/Makefile
 	lib/libspl/include/os/Makefile
 	lib/libspl/include/os/freebsd/Makefile
 	lib/libspl/include/os/freebsd/sys/Makefile
@@ -385,6 +383,7 @@ AC_CONFIG_FILES([
 	tests/zfs-tests/tests/functional/rootpool/Makefile
 	tests/zfs-tests/tests/functional/rsend/Makefile
 	tests/zfs-tests/tests/functional/scrub_mirror/Makefile
+	tests/zfs-tests/tests/functional/simd/Makefile
 	tests/zfs-tests/tests/functional/slog/Makefile
 	tests/zfs-tests/tests/functional/snapshot/Makefile
 	tests/zfs-tests/tests/functional/snapused/Makefile

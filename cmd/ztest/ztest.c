@@ -631,6 +631,8 @@ fatal(int do_perror, char *message, ...)
 
 	(void) fflush(stdout);
 	buf = umem_alloc(FATAL_MSG_SZ, UMEM_NOFAIL);
+	if (buf == NULL)
+		goto out;
 
 	va_start(args, message);
 	(void) sprintf(buf, "ztest: ");
@@ -644,6 +646,7 @@ fatal(int do_perror, char *message, ...)
 	(void) fprintf(stderr, "%s\n", buf);
 	fatal_msg = buf;			/* to ease debugging */
 
+out:
 	if (ztest_dump_core)
 		abort();
 	else
@@ -2383,6 +2386,7 @@ zil_replay_func_t *ztest_replay_vector[TX_MAX_TYPE] = {
 	NULL,			/* TX_MKDIR_ATTR */
 	NULL,			/* TX_MKDIR_ACL_ATTR */
 	NULL,			/* TX_WRITE2 */
+	NULL,			/* TX_SETSAXATTR */
 };
 
 /*

@@ -119,7 +119,6 @@ dsl_wrapping_key_create(uint8_t *wkeydata, zfs_keyformat_t keyformat,
 	/* allocate and initialize the underlying crypto key */
 	wkey->wk_key.ck_data = kmem_alloc(WRAPPING_KEY_LEN, KM_SLEEP);
 
-	wkey->wk_key.ck_format = CRYPTO_KEY_RAW;
 	wkey->wk_key.ck_length = CRYPTO_BYTES2BITS(WRAPPING_KEY_LEN);
 	bcopy(wkeydata, wkey->wk_key.ck_data, WRAPPING_KEY_LEN);
 
@@ -2007,14 +2006,6 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 	if (ret != 0)
 		return (ret);
 
-	/*
-	 * Useraccounting is not portable and must be done with the keys loaded.
-	 * Therefore, whenever we do any kind of receive the useraccounting
-	 * must not be present.
-	 */
-	ASSERT0(os->os_flags & OBJSET_FLAG_USERACCOUNTING_COMPLETE);
-	ASSERT0(os->os_flags & OBJSET_FLAG_USEROBJACCOUNTING_COMPLETE);
-
 	mdn = DMU_META_DNODE(os);
 
 	/*
@@ -2106,6 +2097,7 @@ dsl_crypto_recv_raw_objset_sync(dsl_dataset_t *ds, dmu_objset_type_t ostype,
 	arc_release(os->os_phys_buf, &os->os_phys_buf);
 	bcopy(portable_mac, os->os_phys->os_portable_mac, ZIO_OBJSET_MAC_LEN);
 	bzero(os->os_phys->os_local_mac, ZIO_OBJSET_MAC_LEN);
+	os->os_flags &= ~OBJSET_FLAG_USERACCOUNTING_COMPLETE;
 	os->os_next_write_raw[tx->tx_txg & TXG_MASK] = B_TRUE;
 
 	/* set metadnode compression and checksum */
