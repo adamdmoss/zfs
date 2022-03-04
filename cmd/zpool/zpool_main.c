@@ -4688,7 +4688,7 @@ print_iostat_default(vdev_stat_t *vs, iostat_cbdata_t *cb, double scale)
 	    format, column_width, cb->cb_scripted);
 }
 
-static const char *class_name[] = {
+static const char *const class_name[] = {
 	VDEV_ALLOC_BIAS_DEDUP,
 	VDEV_ALLOC_BIAS_SPECIAL,
 	VDEV_ALLOC_CLASS_LOGS
@@ -4857,7 +4857,7 @@ children:
 	/*
 	 * print all other top-level devices
 	 */
-	for (uint_t n = 0; n < 3; n++) {
+	for (uint_t n = 0; n < ARRAY_SIZE(class_name); n++) {
 		boolean_t printed = B_FALSE;
 
 		for (c = 0; c < children; c++) {
@@ -5022,7 +5022,7 @@ get_namewidth(zpool_handle_t *zhp, int min_width, int flags, boolean_t verbose)
 	if ((config = zpool_get_config(zhp, NULL)) != NULL) {
 		verify(nvlist_lookup_nvlist(config, ZPOOL_CONFIG_VDEV_TREE,
 		    &nvroot) == 0);
-		unsigned int poolname_len = strlen(zpool_get_name(zhp));
+		size_t poolname_len = strlen(zpool_get_name(zhp));
 		if (verbose == B_FALSE) {
 			width = MAX(poolname_len, min_width);
 		} else {
@@ -5961,7 +5961,7 @@ print_header(list_cbdata_t *cb)
 		}
 
 		if (!first)
-			(void) printf("  ");
+			(void) fputs("  ", stdout);
 		else
 			first = B_FALSE;
 
@@ -5979,14 +5979,14 @@ print_header(list_cbdata_t *cb)
 		}
 
 		if (pl->pl_next == NULL && !right_justify)
-			(void) printf("%s", header);
+			(void) fputs(header, stdout);
 		else if (right_justify)
 			(void) printf("%*s", (int)width, header);
 		else
 			(void) printf("%-*s", (int)width, header);
 	}
 
-	(void) printf("\n");
+	(void) fputc('\n', stdout);
 }
 
 /*
@@ -6016,9 +6016,9 @@ print_pool(zpool_handle_t *zhp, list_cbdata_t *cb)
 
 		if (!first) {
 			if (cb->cb_scripted)
-				(void) printf("\t");
+				(void) fputc('\t', stdout);
 			else
-				(void) printf("  ");
+				(void) fputs("  ", stdout);
 		} else {
 			first = B_FALSE;
 		}
@@ -6048,14 +6048,14 @@ print_pool(zpool_handle_t *zhp, list_cbdata_t *cb)
 		 * format specifier.
 		 */
 		if (cb->cb_scripted || (pl->pl_next == NULL && !right_justify))
-			(void) printf("%s", propstr);
+			(void) fputs(propstr, stdout);
 		else if (right_justify)
 			(void) printf("%*s", (int)width, propstr);
 		else
 			(void) printf("%-*s", (int)width, propstr);
 	}
 
-	(void) printf("\n");
+	(void) fputc('\n', stdout);
 }
 
 static void
@@ -6128,8 +6128,8 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 	char *vname;
 	boolean_t scripted = cb->cb_scripted;
 	uint64_t islog = B_FALSE;
-	char *dashes = "%-*s      -      -      -        -         "
-	    "-      -      -      -  -\n";
+	const char *dashes = "%-*s      -      -      -        -         "
+	    "-      -      -      -         -\n";
 
 	verify(nvlist_lookup_uint64_array(nv, ZPOOL_CONFIG_VDEV_STATS,
 	    (uint64_t **)&vs, &c) == 0);
@@ -6191,7 +6191,7 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		}
 		print_one_column(ZPOOL_PROP_HEALTH, 0, state, scripted,
 		    B_TRUE, format);
-		(void) printf("\n");
+		(void) fputc('\n', stdout);
 	}
 
 	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
@@ -6220,7 +6220,7 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 	}
 
 	/* list the classes: 'logs', 'dedup', and 'special' */
-	for (uint_t n = 0; n < 3; n++) {
+	for (uint_t n = 0; n < ARRAY_SIZE(class_name); n++) {
 		boolean_t printed = B_FALSE;
 
 		for (c = 0; c < children; c++) {
