@@ -619,7 +619,7 @@ C23   : https://en.cppreference.com/w/c/language/attributes/fallthrough
 #elif XXH_HAS_CPP_ATTRIBUTE(x)
 # define XXH_FALLTHROUGH [[fallthrough]]
 #elif XXH_HAS_ATTRIBUTE(__fallthrough__)
-# define XXH_FALLTHROUGH __attribute__ ((fallthrough))
+# define XXH_FALLTHROUGH __attribute__ ((__fallthrough__))
 #else
 # define XXH_FALLTHROUGH
 #endif
