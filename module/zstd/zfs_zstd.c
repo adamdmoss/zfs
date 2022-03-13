@@ -48,7 +48,8 @@
 
 #define	ZSTD_STATIC_LINKING_ONLY
 #include "lib/zstd.h"
-#include "lib/common/zstd_errors.h"
+#include "lib/common/zstd_internal.h"
+#include "lib/zstd_errors.h"
 
 kstat_t *zstd_ksp = NULL;
 
@@ -207,7 +208,11 @@ static struct zstd_pool *zstd_mempool_dctx;
  * and while ASAN does this, KASAN defines that and does not. So to avoid
  * changing the external code, we do this.
  */
-#if defined(ZFS_ASAN_ENABLED)
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define	ADDRESS_SANITIZER 1
+#endif
+#elif defined(__SANITIZE_ADDRESS__)
 #define	ADDRESS_SANITIZER 1
 #endif
 #if defined(_KERNEL) && defined(ADDRESS_SANITIZER)
@@ -781,7 +786,7 @@ module_exit(zstd_fini);
 
 ZFS_MODULE_DESCRIPTION("ZSTD Compression for ZFS");
 ZFS_MODULE_LICENSE("Dual BSD/GPL");
-ZFS_MODULE_VERSION(ZSTD_VERSION_STRING "a");
+ZFS_MODULE_VERSION(ZSTD_VERSION_STRING);
 
 EXPORT_SYMBOL(zfs_zstd_compress);
 EXPORT_SYMBOL(zfs_zstd_decompress_level);
