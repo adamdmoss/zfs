@@ -8,6 +8,14 @@ AM_CFLAGS += -fno-tree-vectorize
 
 noinst_LTLIBRARIES = libzstd.la
 
+if TARGET_CPU_X86_64
+ASM_SOURCES_AS = lib/decompress/huf_decompress_amd64.S
+else
+ASM_SOURCES_AS =
+endif
+
+KERNEL_ASM = $(ASM_SOURCES_AS)
+
 KERNEL_C = lib/common/entropy_common.c \
 	lib/common/error_private.c \
 	lib/common/fse_decompress.c \
@@ -31,7 +39,7 @@ KERNEL_C = lib/common/entropy_common.c \
 	lib/decompress/zstd_decompress_block.c \
 	zfs_zstd.c
 
-nodist_libzstd_la_SOURCES = $(KERNEL_C)
+nodist_libzstd_la_SOURCES = $(KERNEL_C) $(KERNEL_ASM)
 
 %.$(OBJEXT):  CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w
 %.l$(OBJEXT): CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w
