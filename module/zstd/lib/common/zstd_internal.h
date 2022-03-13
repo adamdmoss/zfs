@@ -43,6 +43,7 @@ extern "C" {
 
 /* ---- static assert (debug) --- */
 #define ZSTD_STATIC_ASSERT(c) DEBUG_STATIC_ASSERT(c)
+#define ZSTD_isError ERR_isError   /* for inlining */
 #define FSE_isError  ERR_isError
 #define HUF_isError  ERR_isError
 
