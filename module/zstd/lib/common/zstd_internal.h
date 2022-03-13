@@ -169,7 +169,7 @@ static UNUSED_ATTR const U32 OF_defaultNormLog = OF_DEFAULTNORMLOG;
 *  Shared functions to include for inlining
 *********************************************/
 static void ZSTD_copy8(void* dst, const void* src) {
-#if defined(ZSTD_ARCH_ARM_NEON)
+#if !defined(ZSTD_NO_INTRINSICS) && defined(ZSTD_ARCH_ARM_NEON)
     vst1_u8((uint8_t*)dst, vld1_u8((const uint8_t*)src));
 #else
     ZSTD_memcpy(dst, src, 8);
@@ -182,7 +182,7 @@ static void ZSTD_copy8(void* dst, const void* src) {
    literal buffer is, there can be partial overlaps in this call on the final
    copy if the literal is being shifted by less than 16 bytes. */
 static void ZSTD_copy16(void* dst, const void* src) {
-#if defined(ZSTD_ARCH_ARM_NEON)
+#if !defined(ZSTD_NO_INTRINSICS) && defined(ZSTD_ARCH_ARM_NEON)
     vst1q_u8((uint8_t*)dst, vld1q_u8((const uint8_t*)src));
 #elif defined(ZSTD_ARCH_X86_SSE2)
     _mm_storeu_si128((__m128i*)dst, _mm_loadu_si128((const __m128i*)src));
