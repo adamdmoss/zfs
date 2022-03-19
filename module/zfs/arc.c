@@ -9767,23 +9767,29 @@ l2arc_feed_thread(void *unused)
 			continue;
 		}
 
-		/*
-		 * Avoid contributing to memory pressure.
-		 */
-		if (l2arc_hdr_limit_reached()) {
-			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
-			spa_config_exit(spa, SCL_L2ARC, dev);
-			continue;
-		}
-
-		ARCSTAT_BUMP(arcstat_l2_feeds);
-
 		size = l2arc_write_size(dev);
+
+		int limit_reached_before_evict = l2arc_hdr_limit_reached();
 
 		/*
 		 * Evict L2ARC buffers that will be overwritten.
 		 */
 		l2arc_evict(dev, size, B_FALSE);
+
+		int limit_reached_after_evict = l2arc_hdr_limit_reached();
+		/*
+		 * Avoid contributing to memory pressure.
+		 */
+		if (limit_reached_before_evict && !limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
+		}
+		if (limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_INCR(arcstat_l2_abort_lowmem, 1000000);
+			//spa_config_exit(spa, SCL_L2ARC, dev);
+			//continue;
+		}
+
+		ARCSTAT_BUMP(arcstat_l2_feeds);
 
 		/*
 		 * Write ARC buffers.
