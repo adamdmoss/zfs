@@ -5758,7 +5758,7 @@ arc_read_done(zio_t *zio)
 	}
 
 	arc_hdr_clear_flags(hdr, ARC_FLAG_L2_EVICTED);
-	if (l2arc_noprefetch && HDR_PREFETCH(hdr))
+	if (l2arc_noprefetch && (HDR_PREFETCH(hdr) || HDR_PRESCIENT_PREFETCH(hdr)))
 		arc_hdr_clear_flags(hdr, ARC_FLAG_L2CACHE);
 
 	callback_list = hdr->b_l1hdr.b_acb;
@@ -6348,7 +6348,7 @@ top:
 			 */
 			if (HDR_HAS_L2HDR(hdr) &&
 			    !HDR_L2_WRITING(hdr) && !HDR_L2_EVICTED(hdr) &&
-			    !(l2arc_noprefetch && HDR_PREFETCH(hdr))) {
+			    !(l2arc_noprefetch && (HDR_PREFETCH(hdr)) || HDR_PRESCIENT_PREFETCH(hdr))) {
 				l2arc_read_callback_t *cb;
 				abd_t *abd;
 				uint64_t asize;
@@ -7095,8 +7095,8 @@ arc_write(zio_t *pio, spa_t *spa, uint64_t txg,
 	ASSERT(!HDR_IO_IN_PROGRESS(hdr));
 	ASSERT3P(hdr->b_l1hdr.b_acb, ==, NULL);
 	ASSERT3U(hdr->b_l1hdr.b_bufcnt, >, 0);
-	if (l2arc)
-		arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
+	//if (l2arc)
+	//	arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
 
 	if (ARC_BUF_ENCRYPTED(buf)) {
 		ASSERT(ARC_BUF_COMPRESSED(buf));
@@ -9767,23 +9767,29 @@ l2arc_feed_thread(void *unused)
 			continue;
 		}
 
-		/*
-		 * Avoid contributing to memory pressure.
-		 */
-		if (l2arc_hdr_limit_reached()) {
-			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
-			spa_config_exit(spa, SCL_L2ARC, dev);
-			continue;
-		}
-
-		ARCSTAT_BUMP(arcstat_l2_feeds);
-
 		size = l2arc_write_size(dev);
+
+		int limit_reached_before_evict = l2arc_hdr_limit_reached();
 
 		/*
 		 * Evict L2ARC buffers that will be overwritten.
 		 */
 		l2arc_evict(dev, size, B_FALSE);
+
+		int limit_reached_after_evict = l2arc_hdr_limit_reached();
+		/*
+		 * Avoid contributing to memory pressure.
+		 */
+		if (limit_reached_before_evict && !limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
+		}
+		if (limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_INCR(arcstat_l2_abort_lowmem, 1000000);
+			//spa_config_exit(spa, SCL_L2ARC, dev);
+			//continue;
+		}
+
+		ARCSTAT_BUMP(arcstat_l2_feeds);
 
 		/*
 		 * Write ARC buffers.
