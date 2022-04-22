@@ -50,7 +50,7 @@
 #include "lib/zstd.h"
 #include "lib/common/zstd_errors.h"
 
-kstat_t *zstd_ksp = NULL;
+static kstat_t *zstd_ksp = NULL;
 
 typedef struct zstd_stats {
 	kstat_named_t	zstd_stat_alloc_fail;
@@ -704,7 +704,7 @@ zstd_init(void)
 	return (0);
 }
 
-extern void __exit
+extern void
 zstd_fini(void)
 {
 	/* Deinitialize kstat */
@@ -718,12 +718,10 @@ zstd_fini(void)
 }
 
 #if defined(_KERNEL)
+#ifdef __FreeBSD__
 module_init(zstd_init);
 module_exit(zstd_fini);
-
-ZFS_MODULE_DESCRIPTION("ZSTD Compression for ZFS");
-ZFS_MODULE_LICENSE("Dual BSD/GPL");
-ZFS_MODULE_VERSION(ZSTD_VERSION_STRING "a");
+#endif
 
 EXPORT_SYMBOL(zfs_zstd_compress);
 EXPORT_SYMBOL(zfs_zstd_decompress_level);

@@ -42,7 +42,7 @@
 #include <linux/ctype.h>
 #include <sys/disp.h>
 #include <sys/random.h>
-#include <sys/strings.h>
+#include <sys/string.h>
 #include <linux/kmod.h>
 #include <linux/mod_compat.h>
 #include <sys/cred.h>
@@ -771,7 +771,6 @@ spl_init(void)
 {
 	int rc = 0;
 
-	bzero(&p0, sizeof (proc_t));
 	spl_random_init();
 
 	if ((rc = spl_kvmem_init()))
@@ -829,7 +828,7 @@ spl_fini(void)
 module_init(spl_init);
 module_exit(spl_fini);
 
-ZFS_MODULE_DESCRIPTION("Solaris Porting Layer");
-ZFS_MODULE_AUTHOR(ZFS_META_AUTHOR);
-ZFS_MODULE_LICENSE("GPL");
-ZFS_MODULE_VERSION(ZFS_META_VERSION "-" ZFS_META_RELEASE);
+MODULE_DESCRIPTION("Solaris Porting Layer");
+MODULE_AUTHOR(ZFS_META_AUTHOR);
+MODULE_LICENSE("GPL");
+MODULE_VERSION(ZFS_META_VERSION "-" ZFS_META_RELEASE);
