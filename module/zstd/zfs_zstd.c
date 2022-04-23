@@ -123,7 +123,6 @@ kstat_zstd_update(kstat_t *ksp, int rw) {
 
         if (rw == KSTAT_WRITE && ksp == zstd_ksp) {
         	ZSTDSTAT_ZERO(zstd_stat_alloc_fail);
-        	ZSTDSTAT_ZERO(zstd_stat_alloc_fallback);
         	ZSTDSTAT_ZERO(zstd_stat_com_alloc_fail);
         	ZSTDSTAT_ZERO(zstd_stat_dec_alloc_fail);
         	ZSTDSTAT_ZERO(zstd_stat_com_inval);
