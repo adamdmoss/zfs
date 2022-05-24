@@ -1098,10 +1098,9 @@ This should be less than
 .
 .It Sy zfs_wrlog_data_max Ns = Pq int
 The upper limit of write-transaction zil log data size in bytes.
-Once it is reached, write operation is blocked, until log data is cleared out
-after transaction group sync.
-Because of some overhead, it should be set
-at least 2 times the size of
+Write operations are throttled when approaching the limit until log data is
+cleared out after transaction group sync.
+Because of some overhead, it should be set at least 2 times the size of
 .Sy zfs_dirty_data_max
 .No to prevent harming normal write throughput.
 It also should be smaller than the size of the slog device if slog is present.
@@ -2128,6 +2127,14 @@ However, if there are fewer than
 .Sy zfs_embedded_slog_min_ms
 metaslabs in the vdev, this functionality is disabled.
 This ensures that we don't set aside an unreasonable amount of space for the ZIL.
+.
+.It Sy zfs_zstd_earlyabort_pass Ns = Ns Sy 1 Pq int
+Whether heuristic for detection of incompressible data with zstd levels >= 3
+using LZ4 and zstd-1 passes is enabled.
+.
+.It Sy zfs_zstd_abort_size Ns = Ns Sy 131072 Pq int
+Minimal uncompressed size (inclusive) of a record before the early abort
+heuristic will be attempted.
 .
 .It Sy zio_deadman_log_all Ns = Ns Sy 0 Ns | Ns 1 Pq int
 If non-zero, the zio deadman will produce debugging messages
