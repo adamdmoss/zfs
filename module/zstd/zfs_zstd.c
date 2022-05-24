@@ -131,6 +131,11 @@ kstat_zstd_update(kstat_t *ksp, int rw)
 }
 #endif
 
+/*
+ * structure for allocation metadata, since zstd memory interface
+ * expects malloc/free-like semantics instead of vmem-like
+ */
+struct zstd_kmem_hdr {
 	size_t kmem_size;
 	char data[];
 };
