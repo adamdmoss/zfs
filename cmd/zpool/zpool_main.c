@@ -50,7 +50,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -519,7 +518,7 @@ print_vdev_prop_cb(int prop, void *cb)
  * that command.  Otherwise, iterate over the entire command table and display
  * a complete usage message.
  */
-static void
+static __attribute__((noreturn)) void
 usage(boolean_t requested)
 {
 	FILE *fp = requested ? stdout : stderr;
@@ -1791,8 +1790,8 @@ zpool_do_create(int argc, char **argv)
 			    tname ? tname : poolname, ZFS_TYPE_FILESYSTEM);
 			if (pool != NULL) {
 				if (zfs_mount(pool, NULL, 0) == 0) {
-					ret = zfs_shareall(pool);
-					zfs_commit_all_shares();
+					ret = zfs_share(pool, NULL);
+					zfs_commit_shares(NULL);
 				}
 				zfs_close(pool);
 			}
@@ -1988,40 +1987,21 @@ static int
 max_width(zpool_handle_t *zhp, nvlist_t *nv, int depth, int max,
     int name_flags)
 {
-	char *name;
-	nvlist_t **child;
-	uint_t c, children;
-	int ret;
+	static const char *const subtypes[] =
+	    {ZPOOL_CONFIG_SPARES, ZPOOL_CONFIG_L2CACHE, ZPOOL_CONFIG_CHILDREN};
 
-	name = zpool_vdev_name(g_zfs, zhp, nv, name_flags);
-	if (strlen(name) + depth > max)
-		max = strlen(name) + depth;
-
+	char *name = zpool_vdev_name(g_zfs, zhp, nv, name_flags);
+	max = MAX(strlen(name) + depth, max);
 	free(name);
 
-	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_SPARES,
-	    &child, &children) == 0) {
-		for (c = 0; c < children; c++)
-			if ((ret = max_width(zhp, child[c], depth + 2,
-			    max, name_flags)) > max)
-				max = ret;
-	}
-
-	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_L2CACHE,
-	    &child, &children) == 0) {
-		for (c = 0; c < children; c++)
-			if ((ret = max_width(zhp, child[c], depth + 2,
-			    max, name_flags)) > max)
-				max = ret;
-	}
-
-	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
-	    &child, &children) == 0) {
-		for (c = 0; c < children; c++)
-			if ((ret = max_width(zhp, child[c], depth + 2,
-			    max, name_flags)) > max)
-				max = ret;
-	}
+	nvlist_t **child;
+	uint_t children;
+	for (size_t i = 0; i < ARRAY_SIZE(subtypes); ++i)
+		if (nvlist_lookup_nvlist_array(nv, subtypes[i],
+		    &child, &children) == 0)
+			for (uint_t c = 0; c < children; ++c)
+				max = MAX(max_width(zhp, child[c], depth + 2,
+				    max, name_flags), max);
 
 	return (max);
 }
@@ -2473,7 +2453,7 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 
 	if (vs->vs_scan_removing != 0) {
 		(void) printf(gettext("  (removing)"));
-	} else if (vs->vs_noalloc != 0) {
+	} else if (VDEV_STAT_VALID(vs_noalloc, vsc) && vs->vs_noalloc != 0) {
 		(void) printf(gettext("  (non-allocating)"));
 	}
 
@@ -6163,7 +6143,7 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		 * 'toplevel' boolean value is passed to the print_one_column()
 		 * to indicate that the value is valid.
 		 */
-		if (vs->vs_pspace)
+		if (VDEV_STAT_VALID(vs_pspace, c) && vs->vs_pspace)
 			print_one_column(ZPOOL_PROP_SIZE, vs->vs_pspace, NULL,
 			    scripted, B_TRUE, format);
 		else
@@ -10070,7 +10050,6 @@ zpool_do_get(int argc, char **argv)
 	zprop_list_t fake_name = { 0 };
 	int ret;
 	int c, i;
-	char *value;
 	char *propstr = NULL;
 
 	cb.cb_first = B_TRUE;
@@ -10097,35 +10076,34 @@ zpool_do_get(int argc, char **argv)
 			cb.cb_scripted = B_TRUE;
 			break;
 		case 'o':
-			bzero(&cb.cb_columns, sizeof (cb.cb_columns));
+			memset(&cb.cb_columns, 0, sizeof (cb.cb_columns));
 			i = 0;
-			while (*optarg != '\0') {
-				static char *col_subopts[] =
-				{ "name", "property", "value", "source",
-				"all", NULL };
 
-				if (i == ZFS_GET_NCOLS) {
+			for (char *tok; (tok = strsep(&optarg, ",")); ) {
+				static const char *const col_opts[] =
+				{ "name", "property", "value", "source",
+				    "all" };
+				static const zfs_get_column_t col_cols[] =
+				{ GET_COL_NAME, GET_COL_PROPERTY, GET_COL_VALUE,
+				    GET_COL_SOURCE };
+
+				if (i == ZFS_GET_NCOLS - 1) {
 					(void) fprintf(stderr, gettext("too "
 					"many fields given to -o "
 					"option\n"));
 					usage(B_FALSE);
 				}
 
-				switch (getsubopt(&optarg, col_subopts,
-				    &value)) {
-				case 0:
-					cb.cb_columns[i++] = GET_COL_NAME;
-					break;
-				case 1:
-					cb.cb_columns[i++] = GET_COL_PROPERTY;
-					break;
-				case 2:
-					cb.cb_columns[i++] = GET_COL_VALUE;
-					break;
-				case 3:
-					cb.cb_columns[i++] = GET_COL_SOURCE;
-					break;
-				case 4:
+				for (c = 0; c < ARRAY_SIZE(col_opts); ++c)
+					if (strcmp(tok, col_opts[c]) == 0)
+						goto found;
+
+				(void) fprintf(stderr,
+				    gettext("invalid column name '%s'\n"), tok);
+				usage(B_FALSE);
+
+found:
+				if (c >= 4) {
 					if (i > 0) {
 						(void) fprintf(stderr,
 						    gettext("\"all\" conflicts "
@@ -10133,18 +10111,12 @@ zpool_do_get(int argc, char **argv)
 						    "given to -o option\n"));
 						usage(B_FALSE);
 					}
-					cb.cb_columns[0] = GET_COL_NAME;
-					cb.cb_columns[1] = GET_COL_PROPERTY;
-					cb.cb_columns[2] = GET_COL_VALUE;
-					cb.cb_columns[3] = GET_COL_SOURCE;
-					i = ZFS_GET_NCOLS;
-					break;
-				default:
-					(void) fprintf(stderr,
-					    gettext("invalid column name "
-					    "'%s'\n"), value);
-					usage(B_FALSE);
-				}
+
+					memcpy(cb.cb_columns, col_cols,
+					    sizeof (col_cols));
+					i = ZFS_GET_NCOLS - 1;
+				} else
+					cb.cb_columns[i++] = col_cols[c];
 			}
 			break;
 		case '?':
@@ -10672,9 +10644,7 @@ int
 zpool_do_wait(int argc, char **argv)
 {
 	boolean_t verbose = B_FALSE;
-	int c;
-	char *value;
-	int i;
+	int c, i;
 	unsigned long count;
 	pthread_t status_thr;
 	int error = 0;
@@ -10708,28 +10678,26 @@ zpool_do_wait(int argc, char **argv)
 			get_timestamp_arg(*optarg);
 			break;
 		case 't':
-		{
-			static char *col_subopts[] = { "discard", "free",
-			    "initialize", "replace", "remove", "resilver",
-			    "scrub", "trim", NULL };
-
 			/* Reset activities array */
-			bzero(&wd.wd_enabled, sizeof (wd.wd_enabled));
-			while (*optarg != '\0') {
-				int activity = getsubopt(&optarg, col_subopts,
-				    &value);
+			memset(&wd.wd_enabled, 0, sizeof (wd.wd_enabled));
 
-				if (activity < 0) {
-					(void) fprintf(stderr,
-					    gettext("invalid activity '%s'\n"),
-					    value);
-					usage(B_FALSE);
-				}
+			for (char *tok; (tok = strsep(&optarg, ",")); ) {
+				static const char *const col_opts[] = {
+				    "discard", "free", "initialize", "replace",
+				    "remove", "resilver", "scrub", "trim" };
 
-				wd.wd_enabled[activity] = B_TRUE;
+				for (i = 0; i < ARRAY_SIZE(col_opts); ++i)
+					if (strcmp(tok, col_opts[i]) == 0) {
+						wd.wd_enabled[i] = B_TRUE;
+						goto found;
+					}
+
+				(void) fprintf(stderr,
+				    gettext("invalid activity '%s'\n"), tok);
+				usage(B_FALSE);
+found:;
 			}
 			break;
-		}
 		case '?':
 			(void) fprintf(stderr, gettext("invalid option '%c'\n"),
 			    optopt);
@@ -10850,11 +10818,7 @@ static int
 zpool_do_version(int argc, char **argv)
 {
 	(void) argc, (void) argv;
-
-	if (zfs_version_print() == -1)
-		return (1);
-
-	return (0);
+	return (zfs_version_print() != 0);
 }
 
 /*
@@ -10937,7 +10901,7 @@ main(int argc, char **argv)
 	 * Many commands modify input strings for string parsing reasons.
 	 * We create a copy to protect the original argv.
 	 */
-	newargv = malloc((argc + 1) * sizeof (newargv[0]));
+	newargv = safe_malloc((argc + 1) * sizeof (newargv[0]));
 	for (i = 0; i < argc; i++)
 		newargv[i] = strdup(argv[i]);
 	newargv[argc] = NULL;

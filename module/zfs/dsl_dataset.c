@@ -73,12 +73,19 @@
  * The SPA supports block sizes up to 16MB.  However, very large blocks
  * can have an impact on i/o latency (e.g. tying up a spinning disk for
  * ~300ms), and also potentially on the memory allocator.  Therefore,
- * we do not allow the recordsize to be set larger than zfs_max_recordsize
- * (default 1MB).  Larger blocks can be created by changing this tunable,
- * and pools with larger blocks can always be imported and used, regardless
- * of this setting.
+ * we did not allow the recordsize to be set larger than zfs_max_recordsize
+ * (former default: 1MB).  Larger blocks could be created by changing this
+ * tunable, and pools with larger blocks could always be imported and used,
+ * regardless of this setting.
+ *
+ * We do, however, still limit it by default to 1M on x86_32, because Linux's
+ * 3/1 memory split doesn't leave much room for 16M chunks.
  */
-int zfs_max_recordsize = 1 * 1024 * 1024;
+#ifdef _ILP32
+int zfs_max_recordsize =  1 * 1024 * 1024;
+#else
+int zfs_max_recordsize = 16 * 1024 * 1024;
+#endif
 static int zfs_allow_redacted_dataset_mount = 0;
 
 #define	SWITCH64(x, y) \
@@ -1148,7 +1155,7 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 	VERIFY0(dmu_bonus_hold(mos, dsobj, FTAG, &dbuf));
 	dmu_buf_will_dirty(dbuf, tx);
 	dsphys = dbuf->db_data;
-	bzero(dsphys, sizeof (dsl_dataset_phys_t));
+	memset(dsphys, 0, sizeof (dsl_dataset_phys_t));
 	dsphys->ds_dir_obj = dd->dd_object;
 	dsphys->ds_flags = flags;
 	dsphys->ds_fsid_guid = unique_create();
@@ -1248,11 +1255,11 @@ dsl_dataset_zero_zil(dsl_dataset_t *ds, dmu_tx_t *tx)
 	objset_t *os;
 
 	VERIFY0(dmu_objset_from_ds(ds, &os));
-	if (bcmp(&os->os_zil_header, &zero_zil, sizeof (zero_zil)) != 0) {
+	if (memcmp(&os->os_zil_header, &zero_zil, sizeof (zero_zil)) != 0) {
 		dsl_pool_t *dp = ds->ds_dir->dd_pool;
 		zio_t *zio;
 
-		bzero(&os->os_zil_header, sizeof (os->os_zil_header));
+		memset(&os->os_zil_header, 0, sizeof (os->os_zil_header));
 		if (os->os_encrypted)
 			os->os_next_write_raw[tx->tx_txg & TXG_MASK] = B_TRUE;
 
@@ -1696,7 +1703,7 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	 */
 	ASSERT(spa_version(dmu_tx_pool(tx)->dp_spa) >= SPA_VERSION_FAST_SNAP ||
 	    dmu_objset_from_ds(ds, &os) != 0 ||
-	    bcmp(&os->os_phys->os_zil_header, &zero_zil,
+	    memcmp(&os->os_phys->os_zil_header, &zero_zil,
 	    sizeof (zero_zil)) == 0);
 
 	/* Should not snapshot a dirty dataset. */
@@ -1718,7 +1725,7 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	VERIFY0(dmu_bonus_hold(mos, dsobj, FTAG, &dbuf));
 	dmu_buf_will_dirty(dbuf, tx);
 	dsphys = dbuf->db_data;
-	bzero(dsphys, sizeof (dsl_dataset_phys_t));
+	memset(dsphys, 0, sizeof (dsl_dataset_phys_t));
 	dsphys->ds_dir_obj = ds->ds_dir->dd_object;
 	dsphys->ds_fsid_guid = unique_create();
 	(void) random_get_pseudo_bytes((void*)&dsphys->ds_guid,
@@ -2895,7 +2902,7 @@ dsl_dataset_modified_since_snap(dsl_dataset_t *ds, dsl_dataset_t *snap)
 			return (B_TRUE);
 		if (dmu_objset_from_ds(snap, &os_snap) != 0)
 			return (B_TRUE);
-		return (bcmp(&os->os_phys->os_meta_dnode,
+		return (memcmp(&os->os_phys->os_meta_dnode,
 		    &os_snap->os_phys->os_meta_dnode,
 		    sizeof (os->os_phys->os_meta_dnode)) != 0);
 	}
@@ -3708,6 +3715,15 @@ dsl_dataset_promote_sync(void *arg, dmu_tx_t *tx)
 
 	dsl_dir_rele(odd, FTAG);
 	promote_rele(ddpa, FTAG);
+
+	/*
+	 * Transfer common error blocks from old head to new head.
+	 */
+	if (spa_feature_is_enabled(dp->dp_spa, SPA_FEATURE_HEAD_ERRLOG)) {
+		uint64_t old_head = origin_head->ds_object;
+		uint64_t new_head = hds->ds_object;
+		spa_swap_errlog(dp->dp_spa, new_head, old_head, tx);
+	}
 }
 
 /*
@@ -4916,7 +4932,7 @@ dsl_dataset_activate_redaction(dsl_dataset_t *ds, uint64_t *redact_snaps,
 	if (num_redact_snaps > 0) {
 		ftuaa->array = kmem_alloc(num_redact_snaps * sizeof (uint64_t),
 		    KM_SLEEP);
-		bcopy(redact_snaps, ftuaa->array, num_redact_snaps *
+		memcpy(ftuaa->array, redact_snaps, num_redact_snaps *
 		    sizeof (uint64_t));
 	}
 	dsl_dataset_activate_feature(dsobj, SPA_FEATURE_REDACTED_DATASETS,
@@ -4924,13 +4940,38 @@ dsl_dataset_activate_redaction(dsl_dataset_t *ds, uint64_t *redact_snaps,
 	ds->ds_feature[SPA_FEATURE_REDACTED_DATASETS] = ftuaa;
 }
 
-#if defined(_LP64)
-#define	RECORDSIZE_PERM ZMOD_RW
-#else
-/* Limited to 1M on 32-bit platforms due to lack of virtual address space */
-#define	RECORDSIZE_PERM ZMOD_RD
-#endif
-ZFS_MODULE_PARAM(zfs, zfs_, max_recordsize, INT, RECORDSIZE_PERM,
+/*
+ * Find and return (in *oldest_dsobj) the oldest snapshot of the dsobj
+ * dataset whose birth time is >= min_txg.
+ */
+int
+dsl_dataset_oldest_snapshot(spa_t *spa, uint64_t head_ds, uint64_t min_txg,
+    uint64_t *oldest_dsobj)
+{
+	dsl_dataset_t *ds;
+	dsl_pool_t *dp = spa->spa_dsl_pool;
+
+	int error = dsl_dataset_hold_obj(dp, head_ds, FTAG, &ds);
+	if (error != 0)
+		return (error);
+
+	uint64_t prev_obj = dsl_dataset_phys(ds)->ds_prev_snap_obj;
+	uint64_t prev_obj_txg = dsl_dataset_phys(ds)->ds_prev_snap_txg;
+
+	while (prev_obj != 0 && min_txg < prev_obj_txg) {
+		dsl_dataset_rele(ds, FTAG);
+		if ((error = dsl_dataset_hold_obj(dp, prev_obj,
+		    FTAG, &ds)) != 0)
+			return (error);
+		prev_obj_txg = dsl_dataset_phys(ds)->ds_prev_snap_txg;
+		prev_obj = dsl_dataset_phys(ds)->ds_prev_snap_obj;
+	}
+	*oldest_dsobj = ds->ds_object;
+	dsl_dataset_rele(ds, FTAG);
+	return (0);
+}
+
+ZFS_MODULE_PARAM(zfs, zfs_, max_recordsize, INT, ZMOD_RW,
 	"Max allowed record size");
 
 ZFS_MODULE_PARAM(zfs, zfs_, allow_redacted_dataset_mount, INT, ZMOD_RW,

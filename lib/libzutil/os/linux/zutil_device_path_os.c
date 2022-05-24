@@ -81,7 +81,7 @@ zfs_append_partition(char *path, size_t max_len)
  * caller must free the returned string
  */
 char *
-zfs_strip_partition(char *path)
+zfs_strip_partition(const char *path)
 {
 	char *tmp = strdup(path);
 	char *part = NULL, *d = NULL;
@@ -117,7 +117,7 @@ zfs_strip_partition(char *path)
  * Returned string must be freed.
  */
 static char *
-zfs_strip_partition_path(char *path)
+zfs_strip_partition_path(const char *path)
 {
 	char *newpath = strdup(path);
 	char *sd_offset;
@@ -148,10 +148,18 @@ zfs_strip_partition_path(char *path)
 /*
  * Strip the unwanted portion of a device path.
  */
-char *
-zfs_strip_path(char *path)
+const char *
+zfs_strip_path(const char *path)
 {
-	return (strrchr(path, '/') + 1);
+	size_t spath_count;
+	const char *const *spaths = zpool_default_search_paths(&spath_count);
+
+	for (size_t i = 0; i < spath_count; ++i)
+		if (strncmp(path, spaths[i], strlen(spaths[i])) == 0 &&
+		    path[strlen(spaths[i])] == '/')
+			return (path + strlen(spaths[i]) + 1);
+
+	return (path);
 }
 
 /*
@@ -613,27 +621,24 @@ zfs_get_underlying_path(const char *dev_name)
 /*
  * A disk is considered a multipath whole disk when:
  *	DEVNAME key value has "dm-"
- *	MPATH_DEVICE_READY is present
- *	DM_UUID key exists
+ *	DM_UUID key exists and starts with 'mpath-'
  *	ID_PART_TABLE_TYPE key does not exist or is not gpt
  *	ID_FS_LABEL key does not exist (disk isn't labeled)
  */
 static boolean_t
 is_mpath_udev_sane(struct udev_device *dev)
 {
-	const char *devname, *type, *uuid, *label, *mpath_ready;
+	const char *devname, *type, *uuid, *label;
 
 	devname = udev_device_get_property_value(dev, "DEVNAME");
 	type = udev_device_get_property_value(dev, "ID_PART_TABLE_TYPE");
 	uuid = udev_device_get_property_value(dev, "DM_UUID");
 	label = udev_device_get_property_value(dev, "ID_FS_LABEL");
-	mpath_ready = udev_device_get_property_value(dev, "MPATH_DEVICE_READY");
 
 	if ((devname != NULL && strncmp(devname, "/dev/dm-", 8) == 0) &&
 	    ((type == NULL) || (strcmp(type, "gpt") != 0)) &&
-	    (uuid != NULL) &&
-	    (label == NULL) &&
-	    (mpath_ready != NULL && strncmp(mpath_ready, "1", 1) == 0)) {
+	    ((uuid != NULL) && (strncmp(uuid, "mpath-", 6) == 0)) &&
+	    (label == NULL)) {
 		return (B_TRUE);
 	}
 

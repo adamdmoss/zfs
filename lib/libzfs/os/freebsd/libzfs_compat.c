@@ -103,9 +103,9 @@ execvPe(const char *name, const char *path, char * const *argv,
 			    16);
 			continue;
 		}
-		bcopy(p, buf, lp);
+		memcpy(buf, p, lp);
 		buf[lp] = '/';
-		bcopy(name, buf + lp + 1, ln);
+		memcpy(buf + lp + 1, name, ln);
 		buf[lp + ln + 1] = '\0';
 
 retry:		(void) execve(bp, argv, envp);
@@ -135,7 +135,7 @@ retry:		(void) execve(bp, argv, envp);
 			if (cnt > 0) {
 				memp[0] = argv[0];
 				memp[1] = bp;
-				bcopy(argv + 1, memp + 2,
+				memcpy(memp + 2, argv + 1,
 				    cnt * sizeof (char *));
 			} else {
 				memp[0] = "sh";
@@ -338,29 +338,35 @@ zpool_nextboot(libzfs_handle_t *hdl, uint64_t pool_guid, uint64_t dev_guid,
 {
 	zfs_cmd_t zc = {"\0"};
 	nvlist_t *args;
-	int error;
 
 	args = fnvlist_alloc();
 	fnvlist_add_uint64(args, ZPOOL_CONFIG_POOL_GUID, pool_guid);
 	fnvlist_add_uint64(args, ZPOOL_CONFIG_GUID, dev_guid);
 	fnvlist_add_string(args, "command", command);
-	error = zcmd_write_src_nvlist(hdl, &zc, args);
-	if (error == 0)
-		error = zfs_ioctl(hdl, ZFS_IOC_NEXTBOOT, &zc);
+	zcmd_write_src_nvlist(hdl, &zc, args);
+	int error = zfs_ioctl(hdl, ZFS_IOC_NEXTBOOT, &zc);
 	zcmd_free_nvlists(&zc);
 	nvlist_free(args);
 	return (error);
 }
 
 /*
- * Fill given version buffer with zfs kernel version.
- * Returns 0 on success, and -1 on error (with errno set)
+ * Return allocated loaded module version, or NULL on error (with errno set)
  */
-int
-zfs_version_kernel(char *version, int len)
+char *
+zfs_version_kernel(void)
 {
-	size_t l = len;
-
-	return (sysctlbyname("vfs.zfs.version.module",
-	    version, &l, NULL, 0));
+	size_t l;
+	if (sysctlbyname("vfs.zfs.version.module",
+	    NULL, &l, NULL, 0) == -1)
+		return (NULL);
+	char *version = malloc(l);
+	if (version == NULL)
+		return (NULL);
+	if (sysctlbyname("vfs.zfs.version.module",
+	    version, &l, NULL, 0) == -1) {
+		free(version);
+		return (NULL);
+	}
+	return (version);
 }

@@ -947,8 +947,8 @@ spa_get_errlists(spa_t *spa, avl_tree_t *last, avl_tree_t *scrub)
 {
 	ASSERT(MUTEX_HELD(&spa->spa_errlist_lock));
 
-	bcopy(&spa->spa_errlist_last, last, sizeof (avl_tree_t));
-	bcopy(&spa->spa_errlist_scrub, scrub, sizeof (avl_tree_t));
+	memcpy(last, &spa->spa_errlist_last, sizeof (avl_tree_t));
+	memcpy(scrub, &spa->spa_errlist_scrub, sizeof (avl_tree_t));
 
 	avl_create(&spa->spa_errlist_scrub,
 	    spa_error_entry_compare, sizeof (spa_error_entry_t),
@@ -2321,9 +2321,6 @@ spa_load_verify_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 	(void) zilog, (void) dnp;
 
-	if (zb->zb_level == ZB_DNODE_LEVEL || BP_IS_HOLE(bp) ||
-	    BP_IS_EMBEDDED(bp) || BP_IS_REDACTED(bp))
-		return (0);
 	/*
 	 * Note: normally this routine will not be called if
 	 * spa_load_verify_metadata is not set.  However, it may be useful
@@ -2331,6 +2328,22 @@ spa_load_verify_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 	 */
 	if (!spa_load_verify_metadata)
 		return (0);
+
+	/*
+	 * Sanity check the block pointer in order to detect obvious damage
+	 * before using the contents in subsequent checks or in zio_read().
+	 * When damaged consider it to be a metadata error since we cannot
+	 * trust the BP_GET_TYPE and BP_GET_LEVEL values.
+	 */
+	if (!zfs_blkptr_verify(spa, bp, B_FALSE, BLK_VERIFY_LOG)) {
+		atomic_inc_64(&sle->sle_meta_count);
+		return (0);
+	}
+
+	if (zb->zb_level == ZB_DNODE_LEVEL || BP_IS_HOLE(bp) ||
+	    BP_IS_EMBEDDED(bp) || BP_IS_REDACTED(bp))
+		return (0);
+
 	if (!BP_IS_METADATA(bp) &&
 	    (!spa_load_verify_data || !sle->sle_verify_data))
 		return (0);
@@ -4366,7 +4379,7 @@ spa_ld_load_vdev_metadata(spa_t *spa)
 
 	error = spa_ld_log_spacemaps(spa);
 	if (error != 0) {
-		spa_load_failed(spa, "spa_ld_log_sm_data failed [error=%d]",
+		spa_load_failed(spa, "spa_ld_log_spacemaps failed [error=%d]",
 		    error);
 		return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, error));
 	}
@@ -8150,7 +8163,7 @@ spa_async_autoexpand(spa_t *spa, vdev_t *vd)
 	spa_event_notify(vd->vdev_spa, vd, NULL, ESC_ZFS_VDEV_AUTOEXPAND);
 }
 
-static _Noreturn void
+static __attribute__((noreturn)) void
 spa_async_thread(void *arg)
 {
 	spa_t *spa = (spa_t *)arg;
@@ -8506,7 +8519,7 @@ spa_sync_nvlist(spa_t *spa, uint64_t obj, nvlist_t *nv, dmu_tx_t *tx)
 
 	VERIFY(nvlist_pack(nv, &packed, &nvsize, NV_ENCODE_XDR,
 	    KM_SLEEP) == 0);
-	bzero(packed + nvsize, bufsize - nvsize);
+	memset(packed + nvsize, 0, bufsize - nvsize);
 
 	dmu_write(spa->spa_meta_objset, obj, 0, bufsize, packed, tx);
 
