@@ -2366,9 +2366,9 @@ zfs_send_cb_impl(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 		 * there was some error, because it might not be totally
 		 * failed.
 		 */
-		err = send_conclusion_record(outfd, NULL);
-		if (err != 0)
-			return (zfs_standard_error(zhp->zfs_hdl, err, errbuf));
+		int err2 = send_conclusion_record(outfd, NULL);
+		if (err2 != 0)
+			return (zfs_standard_error(zhp->zfs_hdl, err2, errbuf));
 	}
 
 	return (err || sdd.err);
@@ -5107,7 +5107,7 @@ zfs_receive_checkprops(libzfs_handle_t *hdl, nvlist_t *props,
 		name = nvpair_name(nvp);
 		prop = zfs_name_to_prop(name);
 
-		if (prop == ZPROP_INVAL) {
+		if (prop == ZPROP_USERPROP) {
 			if (!zfs_prop_user(name)) {
 				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 				    "%s: invalid property '%s'"), errbuf, name);
