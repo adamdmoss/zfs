@@ -1342,12 +1342,13 @@ dsl_scan_check_suspend(dsl_scan_t *scn, const zbookmark_phys_t *zb)
 	uint64_t scan_time_ns = curr_time_ns - scn->scn_sync_start_time;
 	uint64_t sync_time_ns = curr_time_ns -
 	    scn->scn_dp->dp_spa->spa_sync_starttime;
-	int dirty_pct = scn->scn_dp->dp_dirty_total * 100 / zfs_dirty_data_max;
+	uint64_t dirty_min_bytes = zfs_dirty_data_max *
+	    zfs_vdev_async_write_active_min_dirty_percent / 100;
 	int mintime = (scn->scn_phys.scn_func == POOL_SCAN_RESILVER) ?
 	    zfs_resilver_min_time_ms : zfs_scrub_min_time_ms;
 
 	if ((NSEC2MSEC(scan_time_ns) > mintime &&
-	    (dirty_pct >= zfs_vdev_async_write_active_min_dirty_percent ||
+	    (scn->scn_dp->dp_dirty_total >= dirty_min_bytes ||
 	    txg_sync_waiting(scn->scn_dp) ||
 	    NSEC2SEC(sync_time_ns) >= zfs_txg_timeout)) ||
 	    spa_shutting_down(scn->scn_dp->dp_spa) ||
@@ -2002,6 +2003,21 @@ dsl_scan_visitbp(blkptr_t *bp, const zbookmark_phys_t *zb,
 		    SPA_FEATURE_REDACTED_DATASETS));
 		return;
 	}
+
+	/*
+	 * Check if this block contradicts any filesystem flags.
+	 */
+	spa_feature_t f = SPA_FEATURE_LARGE_BLOCKS;
+	if (BP_GET_LSIZE(bp) > SPA_OLD_MAXBLOCKSIZE)
+		ASSERT3B(dsl_dataset_feature_is_active(ds, f), ==, B_TRUE);
+
+	f = zio_checksum_to_feature(BP_GET_CHECKSUM(bp));
+	if (f != SPA_FEATURE_NONE)
+		ASSERT3B(dsl_dataset_feature_is_active(ds, f), ==, B_TRUE);
+
+	f = zio_compress_to_feature(BP_GET_COMPRESS(bp));
+	if (f != SPA_FEATURE_NONE)
+		ASSERT3B(dsl_dataset_feature_is_active(ds, f), ==, B_TRUE);
 
 	if (bp->blk_birth <= scn->scn_phys.scn_cur_min_txg) {
 		scn->scn_lt_min_this_txg++;
@@ -2833,12 +2849,13 @@ scan_io_queue_check_suspend(dsl_scan_t *scn)
 	uint64_t scan_time_ns = curr_time_ns - scn->scn_sync_start_time;
 	uint64_t sync_time_ns = curr_time_ns -
 	    scn->scn_dp->dp_spa->spa_sync_starttime;
-	int dirty_pct = scn->scn_dp->dp_dirty_total * 100 / zfs_dirty_data_max;
+	uint64_t dirty_min_bytes = zfs_dirty_data_max *
+	    zfs_vdev_async_write_active_min_dirty_percent / 100;
 	int mintime = (scn->scn_phys.scn_func == POOL_SCAN_RESILVER) ?
 	    zfs_resilver_min_time_ms : zfs_scrub_min_time_ms;
 
 	return ((NSEC2MSEC(scan_time_ns) > mintime &&
-	    (dirty_pct >= zfs_vdev_async_write_active_min_dirty_percent ||
+	    (scn->scn_dp->dp_dirty_total >= dirty_min_bytes ||
 	    txg_sync_waiting(scn->scn_dp) ||
 	    NSEC2SEC(sync_time_ns) >= zfs_txg_timeout)) ||
 	    spa_shutting_down(scn->scn_dp->dp_spa));
