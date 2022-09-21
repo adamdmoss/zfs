@@ -4986,7 +4986,7 @@ arc_reap_cb_check(void *arg, zthr_t *zthr)
 	 */
 	if (!kmem_cache_reap_active() && free_memory < 0) {
 
-		arc_no_grow = B_TRUE;
+		/*arc_no_grow = B_TRUE;*/
 		arc_warm = B_TRUE;
 		/*
 		 * Wait at least zfs_grow_retry (default 5) seconds
@@ -4995,7 +4995,7 @@ arc_reap_cb_check(void *arg, zthr_t *zthr)
 		arc_growtime = gethrtime() + SEC2NSEC(arc_grow_retry);
 		return (B_TRUE);
 	} else if (free_memory < arc_c >> arc_no_grow_shift) {
-		arc_no_grow = B_TRUE;
+		/*arc_no_grow = B_TRUE*/;
 	} else if (gethrtime() >= arc_growtime) {
 		arc_no_grow = B_FALSE;
 	}

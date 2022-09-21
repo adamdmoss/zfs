@@ -226,7 +226,7 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 	 * unable to keep up with. Set arc_no_grow to briefly pause arc
 	 * growth to avoid compounding the memory pressure.
 	 */
-	arc_no_grow = B_TRUE;
+	/*arc_no_grow = B_TRUE;*/
 
 	/*
 	 * When direct reclaim is observed it usually indicates a rapid
