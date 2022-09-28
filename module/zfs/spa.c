@@ -2312,7 +2312,7 @@ spa_load_verify_done(zio_t *zio)
  * Maximum number of inflight bytes is the log2 fraction of the arc size.
  * By default, we set it to 1/16th of the arc.
  */
-static int spa_load_verify_shift = 4;
+static uint_t spa_load_verify_shift = 4;
 static int spa_load_verify_metadata = B_TRUE;
 static int spa_load_verify_data = B_TRUE;
 
@@ -6438,6 +6438,7 @@ spa_export_common(const char *pool, int new_state, nvlist_t **oldconfig,
 	}
 
 	if (spa->spa_sync_on) {
+		vdev_t *rvd = spa->spa_root_vdev;
 		/*
 		 * A pool cannot be exported if it has an active shared spare.
 		 * This is to prevent other pools stealing the active spare
@@ -6457,13 +6458,10 @@ spa_export_common(const char *pool, int new_state, nvlist_t **oldconfig,
 		 * dirty data resulting from the initialization is
 		 * committed to disk before we unload the pool.
 		 */
-		if (spa->spa_root_vdev != NULL) {
-			vdev_t *rvd = spa->spa_root_vdev;
-			vdev_initialize_stop_all(rvd, VDEV_INITIALIZE_ACTIVE);
-			vdev_trim_stop_all(rvd, VDEV_TRIM_ACTIVE);
-			vdev_autotrim_stop_all(spa);
-			vdev_rebuild_stop_all(spa);
-		}
+		vdev_initialize_stop_all(rvd, VDEV_INITIALIZE_ACTIVE);
+		vdev_trim_stop_all(rvd, VDEV_TRIM_ACTIVE);
+		vdev_autotrim_stop_all(spa);
+		vdev_rebuild_stop_all(spa);
 
 		/*
 		 * We want this to be reflected on every label,
@@ -6473,7 +6471,7 @@ spa_export_common(const char *pool, int new_state, nvlist_t **oldconfig,
 		if (new_state != POOL_STATE_UNINITIALIZED && !hardforce) {
 			spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
 			spa->spa_state = new_state;
-			vdev_config_dirty(spa->spa_root_vdev);
+			vdev_config_dirty(rvd);
 			spa_config_exit(spa, SCL_ALL, FTAG);
 		}
 
@@ -9999,7 +9997,7 @@ EXPORT_SYMBOL(spa_prop_clear_bootfs);
 EXPORT_SYMBOL(spa_event_notify);
 
 /* BEGIN CSTYLED */
-ZFS_MODULE_PARAM(zfs_spa, spa_, load_verify_shift, INT, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs_spa, spa_, load_verify_shift, UINT, ZMOD_RW,
 	"log2 fraction of arc that can be used by inflight I/Os when "
 	"verifying pool during import");
 /* END CSTYLED */

@@ -741,7 +741,7 @@ zfs_get_parent(const char *datasetname, char *parent, int parentsize)
 	/*
 	 * Remove the @bla or /bla from the end of the name to get the parent.
 	 */
-	(void) strncpy(parent, datasetname, parentsize);
+	(void) strlcpy(parent, datasetname, parentsize);
 	cp = strrchr(parent, '@');
 	if (cp != NULL) {
 		cp[0] = '\0';
@@ -6355,7 +6355,7 @@ zfs_ioc_events_next(zfs_cmd_t *zc)
 static int
 zfs_ioc_events_clear(zfs_cmd_t *zc)
 {
-	int count;
+	uint_t count;
 
 	zfs_zevent_drain_all(&count);
 	zc->zc_cookie = count;

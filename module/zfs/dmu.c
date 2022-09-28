@@ -70,7 +70,7 @@ static int zfs_nopwrite_enabled = 1;
  * will wait until the next TXG.
  * A value of zero will disable this throttle.
  */
-static unsigned long zfs_per_txg_dirty_frees_percent = 5;
+static unsigned long zfs_per_txg_dirty_frees_percent = 30;
 
 /*
  * Enable/disable forcing txg sync when dirty checking for holes with lseek().
@@ -86,7 +86,7 @@ static int zfs_dmu_offset_next_sync = 1;
  * helps to limit the amount of memory that can be used by prefetching.
  * Larger objects should be prefetched a bit at a time.
  */
-int dmu_prefetch_max = 8 * SPA_MAXBLOCKSIZE;
+uint_t dmu_prefetch_max = 8 * SPA_MAXBLOCKSIZE;
 
 const dmu_object_type_info_t dmu_ot[DMU_OT_NUMTYPES] = {
 	{DMU_BSWAP_UINT8,  TRUE,  FALSE, FALSE, "unallocated"		},
@@ -2362,5 +2362,5 @@ ZFS_MODULE_PARAM(zfs, zfs_, dmu_offset_next_sync, INT, ZMOD_RW,
 	"Enable forcing txg sync to find holes");
 
 /* CSTYLED */
-ZFS_MODULE_PARAM(zfs, , dmu_prefetch_max, INT, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs, , dmu_prefetch_max, UINT, ZMOD_RW,
 	"Limit one prefetch call to this size");

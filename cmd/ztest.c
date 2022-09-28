@@ -253,10 +253,10 @@ static const ztest_shared_opts_t ztest_opts_defaults = {
 extern uint64_t metaslab_force_ganging;
 extern uint64_t metaslab_df_alloc_threshold;
 extern unsigned long zfs_deadman_synctime_ms;
-extern int metaslab_preload_limit;
+extern uint_t metaslab_preload_limit;
 extern int zfs_compressed_arc_enabled;
 extern int zfs_abd_scatter_enabled;
-extern int dmu_object_alloc_chunk_shift;
+extern uint_t dmu_object_alloc_chunk_shift;
 extern boolean_t zfs_force_some_double_word_sm_entries;
 extern unsigned long zio_decompress_fail_fraction;
 extern unsigned long zfs_reconstruct_indirect_damage_fraction;
@@ -1137,7 +1137,8 @@ process_options(int argc, char **argv)
 			goto invalid;
 
 		int dirlen = strrchr(val, '/') - val;
-		strncpy(zo->zo_alt_libpath, val, dirlen);
+		strlcpy(zo->zo_alt_libpath, val,
+		    MIN(sizeof (zo->zo_alt_libpath), dirlen + 1));
 		invalid_what = "library path", val = zo->zo_alt_libpath;
 		if (strrchr(val, '/') == NULL && (errno = EINVAL))
 			goto invalid;
@@ -1543,7 +1544,7 @@ ztest_dmu_objset_own(const char *name, dmu_objset_type_t type,
 	char *cp = NULL;
 	char ddname[ZFS_MAX_DATASET_NAME_LEN];
 
-	strcpy(ddname, name);
+	strlcpy(ddname, name, sizeof (ddname));
 	cp = strchr(ddname, '@');
 	if (cp != NULL)
 		*cp = '\0';
@@ -3666,7 +3667,7 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	oldguid = oldvd->vdev_guid;
 	oldsize = vdev_get_min_asize(oldvd);
 	oldvd_is_log = oldvd->vdev_top->vdev_islog;
-	(void) strcpy(oldpath, oldvd->vdev_path);
+	(void) strlcpy(oldpath, oldvd->vdev_path, MAXPATHLEN);
 	pvd = oldvd->vdev_parent;
 	pguid = pvd->vdev_guid;
 
@@ -3702,7 +3703,7 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 		if (newvd->vdev_ops == &vdev_draid_spare_ops)
 			newvd_is_dspare = B_TRUE;
 
-		(void) strcpy(newpath, newvd->vdev_path);
+		(void) strlcpy(newpath, newvd->vdev_path, MAXPATHLEN);
 	} else {
 		(void) snprintf(newpath, MAXPATHLEN, ztest_dev_template,
 		    ztest_opts.zo_dir, ztest_opts.zo_pool,
@@ -4638,7 +4639,7 @@ ztest_dmu_object_next_chunk(ztest_ds_t *zd, uint64_t id)
 {
 	(void) id;
 	objset_t *os = zd->zd_os;
-	int dnodes_per_chunk = 1 << dmu_object_alloc_chunk_shift;
+	uint_t dnodes_per_chunk = 1 << dmu_object_alloc_chunk_shift;
 	uint64_t object;
 
 	/*
@@ -6144,8 +6145,8 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 		}
 		vd0 = sav->sav_vdevs[ztest_random(sav->sav_count)];
 		guid0 = vd0->vdev_guid;
-		(void) strcpy(path0, vd0->vdev_path);
-		(void) strcpy(pathrand, vd0->vdev_path);
+		(void) strlcpy(path0, vd0->vdev_path, MAXPATHLEN);
+		(void) strlcpy(pathrand, vd0->vdev_path, MAXPATHLEN);
 
 		leaf = 0;
 		leaves = 1;
