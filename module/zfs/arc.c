@@ -7118,6 +7118,7 @@ arc_write(zio_t *pio, spa_t *spa, uint64_t txg,
 	ASSERT3U(hdr->b_l1hdr.b_bufcnt, >, 0);
 	//if (l2arc)
 	//	arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
+	(void)l2arc;
 
 	if (ARC_BUF_ENCRYPTED(buf)) {
 		ASSERT(ARC_BUF_COMPRESSED(buf));
