@@ -6369,7 +6369,7 @@ top:
 			 */
 			if (HDR_HAS_L2HDR(hdr) &&
 			    !HDR_L2_WRITING(hdr) && !HDR_L2_EVICTED(hdr) &&
-			    !(l2arc_noprefetch && (HDR_PREFETCH(hdr)) || HDR_PRESCIENT_PREFETCH(hdr))) {
+			    !(l2arc_noprefetch && (HDR_PREFETCH(hdr) || HDR_PRESCIENT_PREFETCH(hdr)))) {
 				l2arc_read_callback_t *cb;
 				abd_t *abd;
 				uint64_t asize;
