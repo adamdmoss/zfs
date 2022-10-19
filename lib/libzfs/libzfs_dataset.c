@@ -2006,7 +2006,7 @@ zfs_prop_inherit(zfs_handle_t *zhp, const char *propname, boolean_t received)
 	if ((ret = changelist_prefix(cl)) != 0)
 		goto error;
 
-	if ((ret = zfs_ioctl(zhp->zfs_hdl, ZFS_IOC_INHERIT_PROP, &zc)) != 0) {
+	if (zfs_ioctl(zhp->zfs_hdl, ZFS_IOC_INHERIT_PROP, &zc) != 0) {
 		changelist_free(cl);
 		return (zfs_standard_error(hdl, errno, errbuf));
 	} else {
@@ -4164,6 +4164,8 @@ zfs_snapshot_nvl(libzfs_handle_t *hdl, nvlist_t *snaps, nvlist_t *props)
 	 * same pool, as does lzc_snapshot (below).
 	 */
 	elem = nvlist_next_nvpair(snaps, NULL);
+	if (elem == NULL)
+		return (-1);
 	(void) strlcpy(pool, nvpair_name(elem), sizeof (pool));
 	pool[strcspn(pool, "/@")] = '\0';
 	zpool_hdl = zpool_open(hdl, pool);

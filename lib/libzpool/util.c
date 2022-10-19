@@ -229,13 +229,14 @@ set_global_var(char const *arg)
 		fprintf(stderr, "Failed to open libzpool.so to set global "
 		    "variable\n");
 		ret = EIO;
-		goto out_dlclose;
+		goto out_free;
 	}
 
 	ret = 0;
 
 out_dlclose:
 	dlclose(zpoolhdl);
+out_free:
 	free(varname);
 out_ret:
 	return (ret);
@@ -350,7 +351,7 @@ pool_active(void *unused, const char *name, uint64_t guid,
 }
 #endif
 
-const pool_config_ops_t libzpool_config_ops = {
+pool_config_ops_t libzpool_config_ops = {
 	.pco_refresh_config = refresh_config,
 	.pco_pool_active = pool_active,
 };

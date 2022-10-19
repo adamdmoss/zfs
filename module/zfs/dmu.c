@@ -70,7 +70,7 @@ static int zfs_nopwrite_enabled = 1;
  * will wait until the next TXG.
  * A value of zero will disable this throttle.
  */
-static unsigned long zfs_per_txg_dirty_frees_percent = 30;
+static uint_t zfs_per_txg_dirty_frees_percent = 30;
 
 /*
  * Enable/disable forcing txg sync when dirty checking for holes with lseek().
@@ -145,7 +145,7 @@ const dmu_object_type_info_t dmu_ot[DMU_OT_NUMTYPES] = {
 	{DMU_BSWAP_UINT64, TRUE,  FALSE, FALSE, "bpobj subobj"		}
 };
 
-const dmu_object_byteswap_info_t dmu_ot_byteswap[DMU_BSWAP_NUMFUNCS] = {
+dmu_object_byteswap_info_t dmu_ot_byteswap[DMU_BSWAP_NUMFUNCS] = {
 	{	byteswap_uint8_array,	"uint8"		},
 	{	byteswap_uint16_array,	"uint16"	},
 	{	byteswap_uint32_array,	"uint32"	},
@@ -2355,7 +2355,7 @@ EXPORT_SYMBOL(dmu_ot);
 ZFS_MODULE_PARAM(zfs, zfs_, nopwrite_enabled, INT, ZMOD_RW,
 	"Enable NOP writes");
 
-ZFS_MODULE_PARAM(zfs, zfs_, per_txg_dirty_frees_percent, ULONG, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs, zfs_, per_txg_dirty_frees_percent, UINT, ZMOD_RW,
 	"Percentage of dirtied blocks from frees in one TXG");
 
 ZFS_MODULE_PARAM(zfs, zfs_, dmu_offset_next_sync, INT, ZMOD_RW,
