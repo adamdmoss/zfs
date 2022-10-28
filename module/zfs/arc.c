@@ -4469,7 +4469,7 @@ restart:
 	 * meta buffers.  Requests to the upper layers will be made with
 	 * increasingly large scan sizes until the ARC is below the limit.
 	 */
-	if (meta_used > arc_meta_limit) {
+	if (meta_used > arc_meta_limit || arc_available_memory() < 0) {
 		if (type == ARC_BUFC_DATA) {
 			type = ARC_BUFC_METADATA;
 		} else {
@@ -5136,7 +5136,7 @@ arc_adapt(int bytes, arc_state_t *state)
 		if (!zfs_arc_p_dampener_disable)
 			mult = MIN(mult, 10); /* avoid wild arc_p adjustment */
 
-		arc_p = MIN(arc_c - arc_p_min, arc_p + bytes * mult);
+		arc_p = MIN(arc_c - arc_p_min, arc_p + (uint64_t)bytes * mult);
 	} else if (state == arc_mfu_ghost) {
 		uint64_t delta;
 

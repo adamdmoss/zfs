@@ -237,7 +237,7 @@ static int
 zil_read_log_block(zilog_t *zilog, boolean_t decrypt, const blkptr_t *bp,
     blkptr_t *nbp, void *dst, char **end)
 {
-	enum zio_flag zio_flags = ZIO_FLAG_CANFAIL;
+	zio_flag_t zio_flags = ZIO_FLAG_CANFAIL;
 	arc_flags_t aflags = ARC_FLAG_WAIT;
 	arc_buf_t *abuf = NULL;
 	zbookmark_phys_t zb;
@@ -315,7 +315,7 @@ zil_read_log_block(zilog_t *zilog, boolean_t decrypt, const blkptr_t *bp,
 static int
 zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 {
-	enum zio_flag zio_flags = ZIO_FLAG_CANFAIL;
+	zio_flag_t zio_flags = ZIO_FLAG_CANFAIL;
 	const blkptr_t *bp = &lr->lr_blkptr;
 	arc_flags_t aflags = ARC_FLAG_WAIT;
 	arc_buf_t *abuf = NULL;
@@ -759,11 +759,9 @@ zil_commit_activate_saxattr_feature(zilog_t *zilog)
 	uint64_t txg = 0;
 	dmu_tx_t *tx = NULL;
 
-	if (spa_feature_is_enabled(zilog->zl_spa,
-	    SPA_FEATURE_ZILSAXATTR) &&
+	if (spa_feature_is_enabled(zilog->zl_spa, SPA_FEATURE_ZILSAXATTR) &&
 	    dmu_objset_type(zilog->zl_os) != DMU_OST_ZVOL &&
-	    !dsl_dataset_feature_is_active(ds,
-	    SPA_FEATURE_ZILSAXATTR)) {
+	    !dsl_dataset_feature_is_active(ds, SPA_FEATURE_ZILSAXATTR)) {
 		tx = dmu_tx_create(zilog->zl_os);
 		VERIFY0(dmu_tx_assign(tx, TXG_WAIT));
 		dsl_dataset_dirty(ds, tx);
