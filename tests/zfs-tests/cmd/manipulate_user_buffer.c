@@ -256,15 +256,16 @@ main(int argc, char *argv[])
 			buf[i] = rand();
 	}
 
-	if ((rc = pthread_create(&write_thr, NULL, write_thread, &args))) {
-		fprintf(stderr, "error: pthreads_create, write_thr, "
+	if ((rc = pthread_create(&manipul_thr, NULL, manipulate_buf_thread,
+	    &args))) {
+		fprintf(stderr, "error: pthreads_create, manipul_thr, "
 		    "rc: %d\n", rc);
 		exit(2);
 	}
 
-	if ((rc = pthread_create(&manipul_thr, NULL, manipulate_buf_thread,
-	    &args))) {
-		fprintf(stderr, "error: pthreads_create, manipul_thr, "
+
+	if ((rc = pthread_create(&write_thr, NULL, write_thread, &args))) {
+		fprintf(stderr, "error: pthreads_create, write_thr, "
 		    "rc: %d\n", rc);
 		exit(2);
 	}
