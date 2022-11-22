@@ -18,31 +18,44 @@
  *
  * CDDL HEADER END
  */
+
 /*
- * Copyright (C) 2019 Lawrence Livermore National Security, LLC.
+ * Copyright (c) 2022 Tino Reichardt <milky-zfs@mcmilk.de>
  */
 
-#ifndef _LINUX_SIMD_H
-#define	_LINUX_SIMD_H
+#include <sys/zio_checksum.h>
+#include <sys/zfs_context.h>
+#include <sys/zfs_impl.h>
 
-#if defined(__x86)
-#include <linux/simd_x86.h>
+#include <sys/blake3.h>
+#include <sys/sha2.h>
 
-#elif defined(__arm__)
-#include <linux/simd_arm.h>
+/*
+ * impl_ops - backend for implementations of algorithms
+ */
+const zfs_impl_t *impl_ops[] = {
+	&zfs_blake3_ops,
+	&zfs_sha256_ops,
+	&zfs_sha512_ops,
+	NULL
+};
 
-#elif defined(__aarch64__)
-#include <linux/simd_aarch64.h>
+/*
+ * zfs_impl_get_ops - Get the API functions for an impl backend
+ */
+const zfs_impl_t *
+zfs_impl_get_ops(const char *algo)
+{
+	const zfs_impl_t **ops = impl_ops;
 
-#elif defined(__powerpc__)
-#include <linux/simd_powerpc.h>
+	if (!algo || !*algo)
+		return (*ops);
 
-#else
-#define	kfpu_allowed()		0
-#define	kfpu_begin()		do {} while (0)
-#define	kfpu_end()		do {} while (0)
-#define	kfpu_init()		0
-#define	kfpu_fini()		((void) 0)
+	for (; *ops; ops++) {
+		if (strcmp(algo, (*ops)->name) == 0)
+			break;
+	}
 
-#endif
-#endif /* _LINUX_SIMD_H */
+	ASSERT3P(ops, !=, NULL);
+	return (*ops);
+}
