@@ -421,7 +421,8 @@ get_usage(zpool_help_t idx)
 		return (gettext("\tget [-Hp] [-o \"all\" | field[,...]] "
 		    "<\"all\" | property[,...]> <pool> ...\n"));
 	case HELP_SET:
-		return (gettext("\tset <property=value> <pool> \n"));
+		return (gettext("\tset <property=value> <pool>\n"
+		    "\tset <vdev_property=value> <pool> <vdev>\n"));
 	case HELP_SPLIT:
 		return (gettext("\tsplit [-gLnPl] [-R altroot] [-o mntopts]\n"
 		    "\t    [-o property=value] <pool> <newpool> "
@@ -5184,21 +5185,14 @@ get_stat_flags(zpool_list_t *list)
 static int
 is_vdev_cb(void *zhp_data, nvlist_t *nv, void *cb_data)
 {
+	uint64_t guid;
 	vdev_cbdata_t *cb = cb_data;
-	char *name = NULL;
-	int ret = 1; /* assume match */
 	zpool_handle_t *zhp = zhp_data;
 
-	name = zpool_vdev_name(g_zfs, zhp, nv, cb->cb_name_flags);
+	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_GUID, &guid) != 0)
+		return (0);
 
-	if (strcmp(name, cb->cb_names[0])) {
-		free(name);
-		name = zpool_vdev_name(g_zfs, zhp, nv, VDEV_NAME_GUID);
-		ret = (strcmp(name, cb->cb_names[0]) == 0);
-	}
-	free(name);
-
-	return (ret);
+	return (guid == zpool_vdev_path_to_guid(zhp, cb->cb_names[0]));
 }
 
 /*
@@ -10334,29 +10328,27 @@ zpool_do_set(int argc, char **argv)
 	argc -= 2;
 	argv += 2;
 
-	if (are_vdevs_in_pool(argc, argv, NULL, &cb.cb_vdevs)) {
-		/* Argument is a vdev */
-		cb.cb_vdevs.cb_names = argv;
-		cb.cb_vdevs.cb_names_count = 1;
-		cb.cb_type = ZFS_TYPE_VDEV;
-		argc = 0; /* No pools to process */
-	} else if (are_all_pools(1, argv)) {
-		/* The first arg is a pool name */
-		if (are_vdevs_in_pool(argc - 1, argv + 1, argv[0],
-		    &cb.cb_vdevs)) {
-			/* 2nd argument is a vdev */
-			cb.cb_vdevs.cb_names = argv + 1;
-			cb.cb_vdevs.cb_names_count = 1;
-			cb.cb_type = ZFS_TYPE_VDEV;
-			argc = 1; /* One pool to process */
-		} else if (argc > 1) {
-			(void) fprintf(stderr,
-			    gettext("too many pool names\n"));
-			usage(B_FALSE);
-		}
+	/* argv[0] is pool name */
+	if (!is_pool(argv[0])) {
+		(void) fprintf(stderr,
+		    gettext("cannot open '%s': is not a pool\n"), argv[0]);
+		return (EINVAL);
 	}
 
-	error = for_each_pool(argc, argv, B_TRUE, NULL, ZFS_TYPE_POOL,
+	/* argv[1], when supplied, is vdev name */
+	if (argc == 2) {
+		if (!are_vdevs_in_pool(1, argv + 1, argv[0], &cb.cb_vdevs)) {
+			(void) fprintf(stderr, gettext(
+			    "cannot find '%s' in '%s': device not in pool\n"),
+			    argv[1], argv[0]);
+			return (EINVAL);
+		}
+		cb.cb_vdevs.cb_names = argv + 1;
+		cb.cb_vdevs.cb_names_count = 1;
+		cb.cb_type = ZFS_TYPE_VDEV;
+	}
+
+	error = for_each_pool(1, argv, B_TRUE, NULL, ZFS_TYPE_POOL,
 	    B_FALSE, set_callback, &cb);
 
 	return (error);
