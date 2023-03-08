@@ -3882,10 +3882,25 @@ zfs_do_redact(int argc, char **argv)
 	switch (err) {
 	case 0:
 		break;
-	case ENOENT:
-		(void) fprintf(stderr,
-		    gettext("provided snapshot %s does not exist\n"), snap);
+	case ENOENT: {
+		zfs_handle_t *zhp = zfs_open(g_zfs, snap, ZFS_TYPE_SNAPSHOT);
+		if (zhp == NULL) {
+			(void) fprintf(stderr, gettext("provided snapshot %s "
+			    "does not exist\n"), snap);
+		} else {
+			zfs_close(zhp);
+		}
+		for (int i = 0; i < numrsnaps; i++) {
+			zhp = zfs_open(g_zfs, rsnaps[i], ZFS_TYPE_SNAPSHOT);
+			if (zhp == NULL) {
+				(void) fprintf(stderr, gettext("provided "
+				    "snapshot %s does not exist\n"), rsnaps[i]);
+			} else {
+				zfs_close(zhp);
+			}
+		}
 		break;
+	}
 	case EEXIST:
 		(void) fprintf(stderr, gettext("specified redaction bookmark "
 		    "(%s) provided already exists\n"), bookname);
@@ -4532,7 +4547,7 @@ zfs_do_send(int argc, char **argv)
 		}
 	}
 
-	if (flags.parsable && flags.verbosity == 0)
+	if ((flags.parsable || flags.progressastitle) && flags.verbosity == 0)
 		flags.verbosity = 1;
 
 	if (excludes.count > 0 && !flags.replicate) {
@@ -8672,7 +8687,6 @@ main(int argc, char **argv)
 	int i = 0;
 	const char *cmdname;
 	char **newargv;
-	extern char **environ;
 
 	(void) setlocale(LC_ALL, "");
 	(void) setlocale(LC_NUMERIC, "C");
