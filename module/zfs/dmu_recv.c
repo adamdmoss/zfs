@@ -1223,7 +1223,7 @@ dmu_recv_begin(char *tofs, char *tosnap, dmu_replay_record_t *drr_begin,
     zfs_file_t *fp, offset_t *voffp)
 {
 	dmu_recv_begin_arg_t drba = { 0 };
-	int err;
+	int err = 0;
 
 	memset(drc, 0, sizeof (dmu_recv_cookie_t));
 	drc->drc_drr_begin = drr_begin;
@@ -2225,7 +2225,7 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 			if (err == 0)
 				abd_free(abd);
 		} else {
-			zio_prop_t zp;
+			zio_prop_t zp = {0};
 			dmu_write_policy(rwa->os, dn, 0, 0, &zp);
 
 			zio_flag_t zio_flags = 0;
