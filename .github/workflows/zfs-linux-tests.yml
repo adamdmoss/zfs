@@ -13,6 +13,9 @@ jobs:
   zloop:
     runs-on: ubuntu-${{ inputs.os }}
     steps:
+    - uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
     - uses: actions/download-artifact@v3
       with:
         name: modules-${{ inputs.os }}
@@ -38,6 +41,7 @@ jobs:
         path: |
           /var/tmp/zloop/*/
           !/var/tmp/zloop/*/vdev/
+        retention-days: 14
         if-no-files-found: ignore
     - uses: actions/upload-artifact@v3
       if: failure()
@@ -45,11 +49,15 @@ jobs:
         name: Zpool-files-${{ inputs.os }}
         path: |
           /var/tmp/zloop/*/vdev/
+        retention-days: 14
         if-no-files-found: ignore
 
   sanity:
     runs-on: ubuntu-${{ inputs.os }}
     steps:
+    - uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
     - uses: actions/download-artifact@v3
       with:
         name: modules-${{ inputs.os }}
@@ -83,6 +91,9 @@ jobs:
       matrix:
         tests: [ part1, part2, part3, part4 ]
     steps:
+    - uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
     - uses: actions/download-artifact@v3
       with:
         name: modules-${{ inputs.os }}
