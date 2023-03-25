@@ -6794,7 +6794,7 @@ arc_write(zio_t *pio, spa_t *spa, uint64_t txg,
 	if (uncached)
 		arc_hdr_set_flags(hdr, ARC_FLAG_UNCACHED);
 	else if (l2arc)
-		;//arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
+		arc_hdr_set_flags(hdr, ARC_FLAG_L2CACHE);
 
 	if (ARC_BUF_ENCRYPTED(buf)) {
 		ASSERT(ARC_BUF_COMPRESSED(buf));
