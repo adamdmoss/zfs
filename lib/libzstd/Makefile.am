@@ -1,6 +1,6 @@
 libzstd_la_CFLAGS  = $(AM_CFLAGS) $(LIBRARY_CFLAGS)
 # -fno-tree-vectorize is set for gcc in zstd/common/compiler.h
-# Set it for other compilers, too.
+# Set it for other compilers, too. 
 libzstd_la_CFLAGS += -fno-tree-vectorize
 
 noinst_LTLIBRARIES += libzstd.la
@@ -28,5 +28,10 @@ nodist_libzstd_la_SOURCES = \
 	module/zstd/lib/decompress/zstd_decompress.c \
 	module/zstd/lib/decompress/zstd_decompress_block.c \
 	module/zstd/zfs_zstd.c
+# see also: module/zstd/Makefile.in for the
+# kernel-build equivalents of these rules
+
+lib/zstd.$(OBJEXT):  CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w -I$(top_srcdir)/module/zstd/include
+lib/zstd.l$(OBJEXT): CFLAGS += -fno-tree-vectorize -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -Wp,-w -I$(top_srcdir)/module/zstd/include
 
 libzstd_la_CFLAGS += -include $(top_srcdir)/module/zstd/include/zstd_compat_wrapper.h -fno-tree-vectorize -Wp,-w $(AM_CFLAGS)

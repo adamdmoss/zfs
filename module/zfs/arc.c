@@ -4770,7 +4770,7 @@ arc_reap_cb_check(void *arg, zthr_t *zthr)
 	 */
 	if (!kmem_cache_reap_active() && free_memory < 0) {
 
-		arc_no_grow = B_TRUE;
+		/*arc_no_grow = B_TRUE;*/
 		arc_warm = B_TRUE;
 		/*
 		 * Wait at least zfs_grow_retry (default 5) seconds
@@ -4779,7 +4779,7 @@ arc_reap_cb_check(void *arg, zthr_t *zthr)
 		arc_growtime = gethrtime() + SEC2NSEC(arc_grow_retry);
 		return (B_TRUE);
 	} else if (free_memory < arc_c >> arc_no_grow_shift) {
-		arc_no_grow = B_TRUE;
+		/*arc_no_grow = B_TRUE*/;
 	} else if (gethrtime() >= arc_growtime) {
 		arc_no_grow = B_FALSE;
 	}
@@ -5493,7 +5493,7 @@ arc_read_done(zio_t *zio)
 	}
 
 	arc_hdr_clear_flags(hdr, ARC_FLAG_L2_EVICTED);
-	if (l2arc_noprefetch && HDR_PREFETCH(hdr))
+	if (l2arc_noprefetch && (HDR_PREFETCH(hdr) || HDR_PRESCIENT_PREFETCH(hdr)))
 		arc_hdr_clear_flags(hdr, ARC_FLAG_L2CACHE);
 
 	callback_list = hdr->b_l1hdr.b_acb;
@@ -9535,23 +9535,29 @@ l2arc_feed_thread(void *unused)
 			continue;
 		}
 
-		/*
-		 * Avoid contributing to memory pressure.
-		 */
-		if (l2arc_hdr_limit_reached()) {
-			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
-			spa_config_exit(spa, SCL_L2ARC, dev);
-			continue;
-		}
-
-		ARCSTAT_BUMP(arcstat_l2_feeds);
-
 		size = l2arc_write_size(dev);
+
+		int limit_reached_before_evict = l2arc_hdr_limit_reached();
 
 		/*
 		 * Evict L2ARC buffers that will be overwritten.
 		 */
 		l2arc_evict(dev, size, B_FALSE);
+
+		int limit_reached_after_evict = l2arc_hdr_limit_reached();
+		/*
+		 * Avoid contributing to memory pressure.
+		 */
+		if (limit_reached_before_evict && !limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_BUMP(arcstat_l2_abort_lowmem);
+		}
+		if (limit_reached_after_evict && !arc_reclaim_needed()) {
+			ARCSTAT_INCR(arcstat_l2_abort_lowmem, 1000000);
+			//spa_config_exit(spa, SCL_L2ARC, dev);
+			//continue;
+		}
+
+		ARCSTAT_BUMP(arcstat_l2_feeds);
 
 		/*
 		 * Write ARC buffers.
