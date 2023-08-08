@@ -1869,10 +1869,8 @@ zfs_readdir(vnode_t *vp, zfs_uio_t *uio, cred_t *cr, int *eofp,
 
 		ASSERT3S(outcount, <=, bufsize);
 
-		/* Prefetch znode */
 		if (prefetch)
-			dmu_prefetch(os, objnum, 0, 0, 0,
-			    ZIO_PRIORITY_SYNC_READ);
+			dmu_prefetch_dnode(os, objnum, ZIO_PRIORITY_SYNC_READ);
 
 		/*
 		 * Move to the next entry, fill in the previous offset.
@@ -6290,7 +6288,7 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 
 	error = zfs_clone_range(VTOZ(invp), ap->a_inoffp, VTOZ(outvp),
 	    ap->a_outoffp, &len, ap->a_outcred);
-	if (error == EXDEV || error == EOPNOTSUPP)
+	if (error == EXDEV || error == EINVAL || error == EOPNOTSUPP)
 		goto bad_locked_fallback;
 	*ap->a_lenp = (size_t)len;
 out_locked:
