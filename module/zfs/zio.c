@@ -1775,8 +1775,9 @@ zio_write_compress(zio_t *zio)
 			compress = ZIO_COMPRESS_OFF;
 
 		/* Make sure someone doesn't change their mind on overwrites */
-		ASSERT(BP_IS_EMBEDDED(bp) || MIN(zp->zp_copies + BP_IS_GANG(bp),
-		    spa_max_replication(spa)) == BP_GET_NDVAS(bp));
+		ASSERT(BP_IS_EMBEDDED(bp) || BP_IS_GANG(bp) ||
+		    MIN(zp->zp_copies, spa_max_replication(spa))
+		    == BP_GET_NDVAS(bp));
 	}
 
 	/* If it's a compressed write that is not raw, compress the buffer. */
@@ -4466,8 +4467,8 @@ zio_ready(zio_t *zio)
 	zio_t *pio, *pio_next;
 	zio_link_t *zl = NULL;
 
-	if (zio_wait_for_children(zio, ZIO_CHILD_GANG_BIT | ZIO_CHILD_DDT_BIT,
-	    ZIO_WAIT_READY)) {
+	if (zio_wait_for_children(zio, ZIO_CHILD_LOGICAL_BIT |
+	    ZIO_CHILD_GANG_BIT | ZIO_CHILD_DDT_BIT, ZIO_WAIT_READY)) {
 		return (NULL);
 	}
 
