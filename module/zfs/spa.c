@@ -1133,6 +1133,10 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 #error "unknown OS"
 #endif
 			}
+			else if (t == ZIO_TYPE_WRITE && q == ZIO_TASKQ_ISSUE_HIGH) {
+				// ideally should be higher than ZIO_TASKQ_ISSUE and not low-prio
+				pri = defclsyspri;
+			}
 			else if (t == ZIO_TYPE_READ && q == ZIO_TASKQ_INTERRUPT) {
 				// ADAM: try this, decompression seems to
 				// happen in z_rd_int
