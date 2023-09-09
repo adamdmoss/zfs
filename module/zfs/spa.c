@@ -1123,7 +1123,7 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 			 * are equal then a difference between them is
 			 * insignificant.
 			 */
-			if (t == ZIO_TYPE_WRITE && (q == ZIO_TASKQ_ISSUE || q == ZIO_TASKQ_ISSUE_HIGH)) {
+			if (t == ZIO_TYPE_WRITE && q == ZIO_TASKQ_ISSUE) {
 #if defined(__linux__)
 				//pri++;
 				pri = minclsyspri;
