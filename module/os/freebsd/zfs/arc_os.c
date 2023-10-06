@@ -203,7 +203,7 @@ arc_lowmem(void *arg __unused, int howto __unused)
 {
 	int64_t free_memory, to_free;
 
-	arc_no_grow = B_TRUE;
+	/*arc_no_grow = B_TRUE;*/
 	arc_warm = B_TRUE;
 	arc_growtime = gethrtime() + SEC2NSEC(arc_grow_retry);
 	free_memory = arc_available_memory();

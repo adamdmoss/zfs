@@ -72,7 +72,7 @@
  * See also the comment in arc_shrinker_count().
  * Set to 0 to disable limit.
  */
-int zfs_arc_shrinker_limit = 10000;
+int zfs_arc_shrinker_limit = 0;//10000;
 
 #ifdef CONFIG_MEMORY_HOTPLUG
 static struct notifier_block arc_hotplug_callback_mem_nb;
@@ -230,7 +230,7 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 	 * unable to keep up with. Set arc_no_grow to briefly pause arc
 	 * growth to avoid compounding the memory pressure.
 	 */
-	arc_no_grow = B_TRUE;
+	/*arc_no_grow = B_TRUE;*/
 
 	/*
 	 * When direct reclaim is observed it usually indicates a rapid
