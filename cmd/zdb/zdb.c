@@ -74,6 +74,7 @@
 #include <sys/arc.h>
 #include <sys/arc_impl.h>
 #include <sys/ddt.h>
+#include <sys/ddt_impl.h>
 #include <sys/zfeature.h>
 #include <sys/abd.h>
 #include <sys/blkptr.h>
@@ -198,7 +199,8 @@ sublivelist_verify_blkptr(void *arg, const blkptr_t *bp, boolean_t free,
 					break;
 				sublivelist_verify_block_t svb = {
 				    .svb_dva = bp->blk_dva[i],
-				    .svb_allocated_txg = bp->blk_birth
+				    .svb_allocated_txg =
+				    BP_GET_LOGICAL_BIRTH(bp)
 				};
 
 				if (zfs_btree_find(&sv->sv_leftover, &svb,
@@ -1904,7 +1906,7 @@ dump_dedup_ratio(const ddt_stat_t *dds)
 }
 
 static void
-dump_ddt(ddt_t *ddt, enum ddt_type type, enum ddt_class class)
+dump_ddt(ddt_t *ddt, ddt_type_t type, ddt_class_t class)
 {
 	char name[DDT_NAMELEN];
 	ddt_entry_t dde;
@@ -1964,8 +1966,10 @@ dump_all_ddts(spa_t *spa)
 
 	for (enum zio_checksum c = 0; c < ZIO_CHECKSUM_FUNCTIONS; c++) {
 		ddt_t *ddt = spa->spa_ddt[c];
-		for (enum ddt_type type = 0; type < DDT_TYPES; type++) {
-			for (enum ddt_class class = 0; class < DDT_CLASSES;
+		if (!ddt)
+			continue;
+		for (ddt_type_t type = 0; type < DDT_TYPES; type++) {
+			for (ddt_class_t class = 0; class < DDT_CLASSES;
 			    class++) {
 				dump_ddt(ddt, type, class);
 			}
@@ -2337,7 +2341,7 @@ snprintf_blkptr_compact(char *blkbuf, size_t buflen, const blkptr_t *bp,
 		    (int)BPE_GET_ETYPE(bp),
 		    (u_longlong_t)BPE_GET_LSIZE(bp),
 		    (u_longlong_t)BPE_GET_PSIZE(bp),
-		    (u_longlong_t)bp->blk_birth);
+		    (u_longlong_t)BP_GET_LOGICAL_BIRTH(bp));
 		return;
 	}
 
@@ -2355,7 +2359,7 @@ snprintf_blkptr_compact(char *blkbuf, size_t buflen, const blkptr_t *bp,
 		    buflen - strlen(blkbuf),
 		    "%llxL B=%llu",
 		    (u_longlong_t)BP_GET_LSIZE(bp),
-		    (u_longlong_t)bp->blk_birth);
+		    (u_longlong_t)BP_GET_LOGICAL_BIRTH(bp));
 	} else {
 		(void) snprintf(blkbuf + strlen(blkbuf),
 		    buflen - strlen(blkbuf),
@@ -2363,8 +2367,8 @@ snprintf_blkptr_compact(char *blkbuf, size_t buflen, const blkptr_t *bp,
 		    (u_longlong_t)BP_GET_LSIZE(bp),
 		    (u_longlong_t)BP_GET_PSIZE(bp),
 		    (u_longlong_t)BP_GET_FILL(bp),
-		    (u_longlong_t)bp->blk_birth,
-		    (u_longlong_t)BP_PHYSICAL_BIRTH(bp));
+		    (u_longlong_t)BP_GET_LOGICAL_BIRTH(bp),
+		    (u_longlong_t)BP_GET_BIRTH(bp));
 		if (bp_freed)
 			(void) snprintf(blkbuf + strlen(blkbuf),
 			    buflen - strlen(blkbuf), " %s", "FREE");
@@ -2414,7 +2418,7 @@ visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 {
 	int err = 0;
 
-	if (bp->blk_birth == 0)
+	if (BP_GET_LOGICAL_BIRTH(bp) == 0)
 		return (0);
 
 	print_indirect(spa, bp, zb, dnp);
@@ -2602,7 +2606,7 @@ dump_bptree_cb(void *arg, const blkptr_t *bp, dmu_tx_t *tx)
 	(void) arg, (void) tx;
 	char blkbuf[BP_SPRINTF_LEN];
 
-	if (bp->blk_birth != 0) {
+	if (BP_GET_LOGICAL_BIRTH(bp) != 0) {
 		snprintf_blkptr(blkbuf, sizeof (blkbuf), bp);
 		(void) printf("\t%s\n", blkbuf);
 	}
@@ -2643,7 +2647,7 @@ dump_bpobj_cb(void *arg, const blkptr_t *bp, boolean_t bp_freed, dmu_tx_t *tx)
 	(void) arg, (void) tx;
 	char blkbuf[BP_SPRINTF_LEN];
 
-	ASSERT(bp->blk_birth != 0);
+	ASSERT(BP_GET_LOGICAL_BIRTH(bp) != 0);
 	snprintf_blkptr_compact(blkbuf, sizeof (blkbuf), bp, bp_freed);
 	(void) printf("\t%s\n", blkbuf);
 	return (0);
@@ -5785,7 +5789,7 @@ zdb_blkptr_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 	if (zb->zb_level == ZB_DNODE_LEVEL)
 		return (0);
 
-	if (dump_opt['b'] >= 5 && bp->blk_birth > 0) {
+	if (dump_opt['b'] >= 5 && BP_GET_LOGICAL_BIRTH(bp) > 0) {
 		char blkbuf[BP_SPRINTF_LEN];
 		snprintf_blkptr(blkbuf, sizeof (blkbuf), bp);
 		(void) printf("objset %llu object %llu "
@@ -6061,6 +6065,8 @@ zdb_ddt_leak_init(spa_t *spa, zdb_cb_t *zcb)
 			return;
 
 		ASSERT(ddt_phys_total_refcnt(&dde) > 1);
+		ddt_t *ddt = spa->spa_ddt[ddb.ddb_checksum];
+		VERIFY(ddt);
 
 		for (p = 0; p < DDT_PHYS_TYPES; p++, ddp++) {
 			if (ddp->ddp_phys_birth == 0)
@@ -6075,7 +6081,7 @@ zdb_ddt_leak_init(spa_t *spa, zdb_cb_t *zcb)
 				zcb->zcb_dedup_blocks++;
 			}
 		}
-		ddt_t *ddt = spa->spa_ddt[ddb.ddb_checksum];
+
 		ddt_enter(ddt);
 		VERIFY(ddt_lookup(ddt, &blk, B_TRUE) != NULL);
 		ddt_exit(ddt);
@@ -7121,6 +7127,7 @@ dump_block_stats(spa_t *spa)
 }
 
 typedef struct zdb_ddt_entry {
+	/* key must be first for ddt_key_compare */
 	ddt_key_t	zdde_key;
 	uint64_t	zdde_ref_blocks;
 	uint64_t	zdde_ref_lsize;
@@ -7181,7 +7188,7 @@ dump_simulated_ddt(spa_t *spa)
 	ddt_histogram_t ddh_total = {{{0}}};
 	ddt_stat_t dds_total = {0};
 
-	avl_create(&t, ddt_entry_compare,
+	avl_create(&t, ddt_key_compare,
 	    sizeof (zdb_ddt_entry_t), offsetof(zdb_ddt_entry_t, zdde_node));
 
 	spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
@@ -7947,6 +7954,8 @@ dump_mos_leaks(spa_t *spa)
 			for (uint64_t cksum = 0;
 			    cksum < ZIO_CHECKSUM_FUNCTIONS; cksum++) {
 				ddt_t *ddt = spa->spa_ddt[cksum];
+				if (!ddt)
+					continue;
 				mos_obj_refd(ddt->ddt_object[type][class]);
 			}
 		}
