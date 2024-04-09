@@ -153,6 +153,12 @@ tests = [ 'clean_mirror_001_pos', 'clean_mirror_002_pos',
     'clean_mirror_003_pos', 'clean_mirror_004_pos']
 tags = ['functional', 'clean_mirror']
 
+[tests/functional/cli_root/zinject]
+tests = ['zinject_args']
+pre =
+post =
+tags = ['functional', 'cli_root', 'zinject']
+
 [tests/functional/cli_root/zdb]
 tests = ['zdb_002_pos', 'zdb_003_pos', 'zdb_004_pos', 'zdb_005_pos',
     'zdb_006_pos', 'zdb_args_neg', 'zdb_args_pos',
@@ -372,7 +378,8 @@ tags = ['functional', 'cli_root', 'zpool']
 tests = ['zpool_add_001_pos', 'zpool_add_002_pos', 'zpool_add_003_pos',
     'zpool_add_004_pos', 'zpool_add_006_pos', 'zpool_add_007_neg',
     'zpool_add_008_neg', 'zpool_add_009_neg', 'zpool_add_010_pos',
-    'add-o_ashift', 'add_prop_ashift', 'zpool_add_dryrun_output']
+    'add-o_ashift', 'add_prop_ashift', 'zpool_add_dryrun_output',
+    'zpool_add--allow-ashift-mismatch']
 tags = ['functional', 'cli_root', 'zpool_add']
 
 [tests/functional/cli_root/zpool_attach]
