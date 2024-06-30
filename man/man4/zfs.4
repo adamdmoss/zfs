@@ -820,8 +820,8 @@ only operates during memory pressure/reclaim.
 This is a limit on how many pages the ARC shrinker makes available for
 eviction in response to one page allocation attempt.
 Note that in practice, the kernel's shrinker can ask us to evict
-up to about four times this for one allocation attempt. To limit
-OOM risk, this parameters is ignored if the kernel is in direct
+up to about four times this for one allocation attempt.
+To limit OOM risk, this parameters is ignored if the kernel is in direct
 reclaim mode.
 .Pp
 The default limit of
