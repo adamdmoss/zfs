@@ -79,6 +79,13 @@ zpool_get_all_props(zpool_handle_t *zhp)
 
 	(void) strlcpy(zc.zc_name, zhp->zpool_name, sizeof (zc.zc_name));
 
+	if (zhp->zpool_n_propnames > 0) {
+		nvlist_t *innvl = fnvlist_alloc();
+		fnvlist_add_string_array(innvl, ZPOOL_GET_PROPS_NAMES,
+		    zhp->zpool_propnames, zhp->zpool_n_propnames);
+		zcmd_write_src_nvlist(hdl, &zc, innvl);
+	}
+
 	zcmd_alloc_dst_nvlist(hdl, &zc, 0);
 
 	while (zfs_ioctl(hdl, ZFS_IOC_POOL_GET_PROPS, &zc) != 0) {
@@ -318,6 +325,15 @@ zpool_get_prop(zpool_handle_t *zhp, zpool_prop_t prop, char *buf,
 		return (0);
 	}
 
+	/*
+	 * ZPOOL_PROP_DEDUPCACHED can be fetched by name only using
+	 * the ZPOOL_GET_PROPS_NAMES mechanism
+	 */
+	if (prop == ZPOOL_PROP_DEDUPCACHED) {
+		zpool_add_propname(zhp, ZPOOL_DEDUPCACHED_PROP_NAME);
+		(void) zpool_get_all_props(zhp);
+	}
+
 	if (zhp->zpool_props == NULL && zpool_get_all_props(zhp) &&
 	    prop != ZPOOL_PROP_NAME)
 		return (-1);
@@ -332,6 +348,24 @@ zpool_get_prop(zpool_handle_t *zhp, zpool_prop_t prop, char *buf,
 		intval = zpool_get_prop_int(zhp, prop, &src);
 
 		switch (prop) {
+		case ZPOOL_PROP_DEDUP_TABLE_QUOTA:
+			/*
+			 * If dedup quota is 0, we translate this into 'none'
+			 * (unless literal is set). And if it is UINT64_MAX
+			 * we translate that as 'automatic' (limit to size of
+			 * the dedicated dedup VDEV.  Otherwise, fall throught
+			 * into the regular number formating.
+			 */
+			if (intval == 0) {
+				(void) strlcpy(buf, literal ? "0" : "none",
+				    len);
+				break;
+			} else if (intval == UINT64_MAX) {
+				(void) strlcpy(buf, "auto", len);
+				break;
+			}
+			zfs_fallthrough;
+
 		case ZPOOL_PROP_SIZE:
 		case ZPOOL_PROP_ALLOCATED:
 		case ZPOOL_PROP_FREE:
@@ -342,6 +376,8 @@ zpool_get_prop(zpool_handle_t *zhp, zpool_prop_t prop, char *buf,
 		case ZPOOL_PROP_MAXDNODESIZE:
 		case ZPOOL_PROP_BCLONESAVED:
 		case ZPOOL_PROP_BCLONEUSED:
+		case ZPOOL_PROP_DEDUP_TABLE_SIZE:
+		case ZPOOL_PROP_DEDUPCACHED:
 			if (literal)
 				(void) snprintf(buf, len, "%llu",
 				    (u_longlong_t)intval);
@@ -1713,6 +1749,28 @@ zpool_discard_checkpoint(zpool_handle_t *zhp)
 		(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
 		    "cannot discard checkpoint in '%s'"), zhp->zpool_name);
 		(void) zpool_standard_error(hdl, error, errbuf);
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Load data type for the given pool.
+ */
+int
+zpool_prefetch(zpool_handle_t *zhp, zpool_prefetch_type_t type)
+{
+	libzfs_handle_t *hdl = zhp->zpool_hdl;
+	char msg[1024];
+	int error;
+
+	error = lzc_pool_prefetch(zhp->zpool_name, type);
+	if (error != 0) {
+		(void) snprintf(msg, sizeof (msg), dgettext(TEXT_DOMAIN,
+		    "cannot prefetch %s in '%s'"),
+		    type == ZPOOL_PREFETCH_DDT ? "ddt" : "", zhp->zpool_name);
+		(void) zpool_standard_error(hdl, error, msg);
 		return (-1);
 	}
 
@@ -4382,6 +4440,14 @@ zbookmark_mem_compare(const void *a, const void *b)
 	return (memcmp(a, b, sizeof (zbookmark_phys_t)));
 }
 
+void
+zpool_add_propname(zpool_handle_t *zhp, const char *propname)
+{
+	assert(zhp->zpool_n_propnames < ZHP_MAX_PROPNAMES);
+	zhp->zpool_propnames[zhp->zpool_n_propnames] = propname;
+	zhp->zpool_n_propnames++;
+}
+
 /*
  * Retrieve the persistent error log, uniquify the members, and return to the
  * caller.
@@ -5225,6 +5291,8 @@ zpool_get_vdev_prop_value(nvlist_t *nvprop, vdev_prop_t prop, char *prop_name,
 		case VDEV_PROP_WRITE_ERRORS:
 		case VDEV_PROP_CHECKSUM_ERRORS:
 		case VDEV_PROP_INITIALIZE_ERRORS:
+		case VDEV_PROP_TRIM_ERRORS:
+		case VDEV_PROP_SLOW_IOS:
 		case VDEV_PROP_OPS_NULL:
 		case VDEV_PROP_OPS_READ:
 		case VDEV_PROP_OPS_WRITE:
@@ -5304,6 +5372,11 @@ zpool_get_vdev_prop_value(nvlist_t *nvprop, vdev_prop_t prop, char *prop_name,
 			src = fnvlist_lookup_uint64(nv, ZPROP_SOURCE);
 			intval = fnvlist_lookup_uint64(nv, ZPROP_VALUE);
 		} else {
+			/* 'trim_support' only valid for leaf vdevs */
+			if (prop == VDEV_PROP_TRIM_SUPPORT) {
+				(void) strlcpy(buf, "-", len);
+				break;
+			}
 			src = ZPROP_SRC_DEFAULT;
 			intval = vdev_prop_default_numeric(prop);
 			/* Only use if provided by the RAIDZ VDEV above */

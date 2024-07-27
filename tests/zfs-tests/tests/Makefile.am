@@ -1176,6 +1176,9 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/cli_root/zpool_online/setup.ksh \
 	functional/cli_root/zpool_online/zpool_online_001_pos.ksh \
 	functional/cli_root/zpool_online/zpool_online_002_neg.ksh \
+	functional/cli_root/zpool_prefetch/cleanup.ksh \
+	functional/cli_root/zpool_prefetch/setup.ksh \
+	functional/cli_root/zpool_prefetch/zpool_prefetch_001_pos.ksh \
 	functional/cli_root/zpool_remove/cleanup.ksh \
 	functional/cli_root/zpool_remove/setup.ksh \
 	functional/cli_root/zpool_remove/zpool_remove_001_neg.ksh \
@@ -1415,6 +1418,9 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/deadman/deadman_ratelimit.ksh \
 	functional/deadman/deadman_sync.ksh \
 	functional/deadman/deadman_zio.ksh \
+	functional/dedup/cleanup.ksh \
+	functional/dedup/setup.ksh \
+	functional/dedup/dedup_quota.ksh \
 	functional/delegate/cleanup.ksh \
 	functional/delegate/setup.ksh \
 	functional/delegate/zfs_allow_001_pos.ksh \
@@ -1483,6 +1489,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/fault/decompress_fault.ksh \
 	functional/fault/decrypt_fault.ksh \
 	functional/fault/scrub_after_resilver.ksh \
+	functional/fault/suspend_resume_single.ksh \
 	functional/fault/setup.ksh \
 	functional/fault/zpool_status_-s.ksh \
 	functional/features/async_destroy/async_destroy_001_pos.ksh \

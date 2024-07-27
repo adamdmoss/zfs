@@ -1,3 +1,4 @@
+#!/bin/ksh -p
 #
 # CDDL HEADER START
 #
@@ -20,59 +21,9 @@
 #
 
 #
-# Copyright (c) 2022, Klara Inc.
+# Copyright (c) 2017 by Lawrence Livermore National Security, LLC.
 #
 
-# Set the expected properties of a vdev
-typeset -a properties=(
-    capacity
-    state
-    guid
-    asize
-    psize
-    ashift
-    size
-    free
-    allocated
-    comment
-    expandsize
-    fragmentation
-    bootsize
-    parity
-    path
-    devid
-    physpath
-    encpath
-    fru
-    parent
-    children
-    numchildren
-    read_errors
-    write_errors
-    checksum_errors
-    initialize_errors
-    null_ops
-    read_ops
-    write_ops
-    free_ops
-    claim_ops
-    trim_ops
-    null_bytes
-    read_bytes
-    write_bytes
-    free_bytes
-    claim_bytes
-    trim_bytes
-    removing
-    allocating
-    failfast
-    checksum_n
-    checksum_t
-    io_n
-    io_t
-    slow_io_n
-    slow_io_t
-    trim_support
-    trim_errors
-    slow_ios
-)
+. $STF_SUITE/include/libtest.shlib
+
+default_cleanup
